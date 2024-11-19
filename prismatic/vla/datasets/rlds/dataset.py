@@ -36,6 +36,8 @@ tf.config.set_visible_devices([], "GPU")
 
 
 # ruff: noqa: B006
+# @tf.function(experimental_relax_shapes=True)
+# @tf.autograph.experimental.do_not_convert
 def make_dataset_from_rlds(
     name: str,
     data_dir: str,
@@ -184,6 +186,8 @@ def make_dataset_from_rlds(
             "task": task,
             "action": tf.cast(traj["action"], tf.float32),
             "dataset_name": tf.repeat(name, traj_len),
+            "obj_bbox_names": traj["obj_bbox_names"],
+            "obj_bboxes": tf.cast(traj["obj_bboxes"], tf.float32),
         }
 
         if absolute_action_mask is not None:

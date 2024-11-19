@@ -152,6 +152,17 @@ class Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90(Exp_Qwen25_DinoSigLIP_224px_0_5
 
 
 @dataclass
+class Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90_AUX(Exp_Qwen25_DinoSigLIP_224px_0_5B_OXE_Magic_Soup):
+    vla_id: str = "prism-qwen25-dinosiglip-224px+0_5b+mx-libero-90-aux"
+
+    data_mix: str = "libero_90_vla_aux"
+
+    expected_world_size: int = 8
+    global_batch_size: int = 256
+    per_device_batch_size: int = 32
+
+
+@dataclass
 class Exp_Qwen25_DinoSigLIP_224px_T2_0_5B_LIBERO_90(Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90):
     vla_id: str = "prism-qwen25-dinosiglip-224px-t2+0_5b+mx-libero-90"
     image_sequence_len: int = 2
@@ -266,6 +277,7 @@ class VLARegistry(Enum):
     QWEN25_DINOSIGLIP_224PX_0_5B_MX_OXE_MAGIC_SOUP = Exp_Qwen25_DinoSigLIP_224px_0_5B_OXE_Magic_Soup
     QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90
     QWEN25_DINOSIGLIP_224PX_T2_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_T2_0_5B_LIBERO_90
+    QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90_AUX = Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90_AUX
 
     # === TDROID Fine-tuning Configs ===
     SIGLIP_224PX_MX_TDROID_CARROT_IN_BOWL = Exp_SigLIP_224px_TDROID_CarrotInBowl

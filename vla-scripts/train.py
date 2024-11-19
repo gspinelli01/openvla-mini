@@ -77,8 +77,10 @@ class TrainConfig:
 
     # Tracking Parameters
     trackers: Tuple[str, ...] = ("jsonl", "wandb")                  # Trackers to initialize (if W&B, add config!)
-    wandb_project: str = "prismatic"                                  # Name of W&B project to log to (use default!)
-    wandb_entity: str = None                          # Name of entity to log under
+    # TODO (ajaysri): debug wandb
+    wandb_project: str = "prismatic"                                # Name of W&B project to log to (use default!)
+    wandb_entity: str = "ajaysridhar"                               # Name of entity to log under
+    prob_predict_bbox: float = 0.                                   # Probability to predict bbox
 
     def __post_init__(self) -> None:
         """Lift optimization parameters from `self.vla` for ease of use =>> validate on `expected_world_size`"""
@@ -210,6 +212,7 @@ def train(cfg: TrainConfig) -> None:
         shuffle_buffer_size=cfg.vla.shuffle_buffer_size,
         image_aug=cfg.image_aug,
         action_tokenizer=cfg.action_tokenizer,
+        predict_bbox=cfg.prob_predict_bbox,
     )
 
     # Save dataset statistics for de-normalization at inference time
