@@ -34,20 +34,14 @@ class RLDSBatchTransform:
     base_tokenizer: PreTrainedTokenizerBase
     image_transform: ImageTransform
     prompt_builder_fn: Type[PromptBuilder]
-    predict_stop_token: bool = True
     image_window_size: int = 1
+    predict_stop_token: bool = True
+    prob_predict_bbox: float = 0.5
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
         dataset_name, action = rlds_batch["dataset_name"], rlds_batch["action"]
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
-
-        # if there is no action horizon, remove it here.
-        if self.action_tokenizer.required_future_horizon == 0:
-            action = action[-1]
-        else:
-            # get the last FH + 1 actions (current action + future ones) if required
-            action = action[-self.action_tokenizer.required_future_horizon - 1:]
 
         # either a single or multi image, depending on image_window_size
         if self.image_window_size == 1:
@@ -55,26 +49,61 @@ class RLDSBatchTransform:
         else:
             img = [Image.fromarray(rlds_batch["observation"]["image_primary"][t]) for t in range(self.image_window_size)]
 
-        tokenized_action = self.action_tokenizer(action)
-        raw_action_tokens = self.base_tokenizer(tokenized_action)["input_ids"]
+        
+        # Randomly choose whether to predict bbox or action based on probability
+        predict_bbox_this_time = np.random.random() < self.prob_predict_bbox
 
-        # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
+        conversation = []
+
+        if predict_bbox_this_time:
+            obj_bbox_names = rlds_batch["obj_bbox_names"].decode().split("|")
+            bbox_coords = rlds_batch["obj_bboxes"] # shape (MAX_OBJECTS, 4)
+            # bbox_coords = 2*bbox_coords - 1 # normalize to [-1, 1]
+            bbox_answer = ""
+            bbox_raw_tokens = []
+            for i in range(len(obj_bbox_names)):
+                # bbox_coord_tokenized = self.action_tokenizer(bbox_coords[i])
+                bbox_coord_tokenized = str([round(e, 3) for e in bbox_coords[i]])
+                bbox_answer += f"{obj_bbox_names[i]}: {bbox_coord_tokenized}"
+                if i < len(obj_bbox_names) - 1:
+                    bbox_answer += ", "
+            
+            bbox_raw_tokens = self.base_tokenizer(bbox_answer)["input_ids"]
+            conversation.extend([
+                {"from": "human", "value": f"What are the relevant objects and their bounding boxes?"},
+                {"from": "gpt", "value": bbox_answer}, 
+            ])
+            num_answer_tokens = len(bbox_raw_tokens)
+
+        # Only add action conversation if we're not predicting bbox
+        else:
+            # if there is no action horizon, remove it here.
+            
+            if self.action_tokenizer.required_future_horizon == 0:
+                action = action[-1]
+            else:
+                # get the last FH + 1 actions (current action + future ones) if required
+                action = action[-self.action_tokenizer.required_future_horizon - 1:]
+
+            tokenized_action = self.action_tokenizer(action)
+            raw_action_tokens = self.base_tokenizer(tokenized_action)["input_ids"]
+
+            conversation.extend([
+                {"from": "human", "value": f"What action should the robot take to {lang}?"},
+                {"from": "gpt", "value": tokenized_action}, 
+            ])
+            num_answer_tokens = len(raw_action_tokens)
+
+        # Construct Chat-based Prompt
         prompt_builder = self.prompt_builder_fn("openvla")
-        conversation = [
-            {"from": "human", "value": f"What action should the robot take to {lang}?"},
-            {"from": "gpt", "value": tokenized_action},
-        ]
         for turn in conversation:
             prompt_builder.add_turn(turn["from"], turn["value"])
 
         # Tokenize (w/ `base_tokenizer`)
         input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
         labels = list(input_ids)
-        # print("----------------------")
-        # print(prompt_builder.get_prompt())
 
         # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
-        #   =>> IMPORTANT :: IF WE'RE USING HF LLM.forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
         input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
         pixel_values = self.image_transform(img)
 
@@ -84,10 +113,29 @@ class RLDSBatchTransform:
             # Qwen has <|im_end|><|endoftext|> for example
             num_end_tokens = 2
 
-        # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
-        labels[: -(len(raw_action_tokens) + num_end_tokens)] = IGNORE_INDEX
+        labels[: -(num_answer_tokens + num_end_tokens)] = IGNORE_INDEX
         if not self.predict_stop_token:
             labels[-num_end_tokens:] = IGNORE_INDEX
+
+        
+        # if predict_bbox_this_time:
+        #     # Find the bbox tokens in the sequence and unmask them
+        #     bbox_str = self.base_tokenizer.decode(bbox_raw_tokens)
+        #     bbox_start = prompt_builder.get_prompt().find(bbox_str)
+        #     if bbox_start != -1:
+        #         bbox_token_start = len(self.base_tokenizer.encode(prompt_builder.get_prompt()[:bbox_start]))
+        #         labels[bbox_token_start:bbox_token_start + len(bbox_raw_tokens)] = input_ids[bbox_token_start:bbox_token_start + len(bbox_raw_tokens)]
+        # else:
+        #     # Unmask the action tokens
+        #     action_str = tokenized_action
+        #     action_start = prompt_builder.get_prompt().rfind(action_str)
+        #     if action_start != -1:
+        #         action_token_start = len(self.base_tokenizer.encode(prompt_builder.get_prompt()[:action_start]))
+        #         labels[action_token_start:action_token_start + len(raw_action_tokens)] = input_ids[action_token_start:action_token_start + len(raw_action_tokens)]
+
+        # # Optionally unmask the stop tokens
+        # if self.predict_stop_token:
+        #     labels[-num_end_tokens:] = input_ids[-num_end_tokens:]
 
         return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name)
 
