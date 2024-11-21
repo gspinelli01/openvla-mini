@@ -7,6 +7,7 @@ General utilities and classes for facilitating data loading and collation.
 from dataclasses import dataclass
 from typing import Callable, Dict, Sequence, Tuple
 
+import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -81,14 +82,19 @@ class PaddedCollatorForLanguageModeling:
             }
         else:
             raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
-
-        return dict(
+        
+        output = dict(
             pixel_values=pixel_values,
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
             multimodal_indices=multimodal_indices,
         )
+        
+        if "transform_type" in instances[0]:
+            output["transform_type"] = torch.tensor([instance["transform_type"] for instance in instances], dtype=torch.long)
+
+        return output
 
 
 @dataclass
@@ -137,6 +143,8 @@ class PaddedCollatorForActionPrediction:
             attention_mask=attention_mask,
             labels=labels,
         )
+        if "transform_type" in instances[0]:
+            output["transform_type"] = torch.tensor(np.stack([instance["transform_type"] for instance in instances]), dtype=torch.long)
         if dataset_names is not None:
             output["dataset_names"] = dataset_names
         return output

@@ -193,7 +193,7 @@ ACTION_TOKENIZERS = {
         VQActionTokenizer, vq_vae_path="/iliad/u/belkhale/openvla-mini/vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512"
     ),
     "libero_vq_extra_action_tokenizer": partial(
-        VQActionTokenizer, vq_vae_path="/iliad/u/belkhale/openvla-mini/vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512", use_extra=True
+        VQActionTokenizer, vq_vae_path="/u/ajaysri/openvla-mini-aux-tasks/vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512", use_extra=True
     ),
     "libero_vq_h0_extra_action_tokenizer": partial(
         VQActionTokenizer, vq_vae_path="/iliad/u/belkhale/openvla-mini/vq/pretrain_vq+mx-libero_90+fach-0+ng-7+nemb-128+nlatent-512", use_extra=True

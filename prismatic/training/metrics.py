@@ -69,9 +69,11 @@ class WeightsBiasesTracker:
 
     @overwatch.rank_zero_only
     def initialize(self) -> None:
+        # Ensure wandb_dir is a string and contains only valid characters
+        wandb_dir_str = str(self.wandb_dir.resolve())
         wandb.init(
             name=self.run_id,
-            dir=self.wandb_dir,
+            dir=wandb_dir_str,
             config=self.hparams,
             project=self.project,
             entity=self.entity,

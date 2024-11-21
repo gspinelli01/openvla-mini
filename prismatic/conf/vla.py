@@ -57,6 +57,12 @@ class VLAConfig(ChoiceRegistry):
     reduce_in_full_precision: bool = True           # Accumulate/Reduce All-Gather Gradients in FP32 Full Precision
 
     # fmt: on
+    transform_types: str = "action"
+
+    future_obj_pose_window_size: int = 14          # Future Object Pose Window Size
+    future_2D_trace_window_size: int = 20           # Future 2D Trace Window Size
+    obj_pose_stride: int = 2                       # Object Pose Stride
+    ee_pose_2D_stride: int = 5                      # End-Effector 2D Trace Stride
 
 
 # === OpenVLA Training Configurations ===

@@ -7,7 +7,7 @@ format to OpenVLA, IterableDataset shim.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple, Type
+from typing import Any, Dict, Tuple, Type, List
 
 import numpy as np
 import torch
@@ -27,134 +27,278 @@ from prismatic.vla.datasets.rlds.utils.data_utils import NormalizationType
 # HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
 IGNORE_INDEX = -100
 
+def _get_bbox_qa(rlds_batch: Dict[str, Any], lang: str) -> Tuple[str, str]:
+    obj_bbox_names = rlds_batch["obj_bbox_names"].decode().split("|")
+    bbox_coords = rlds_batch["obj_bboxes"]
+    bbox_answer = ""
+    for i in range(len(obj_bbox_names)):
+        bbox_coord_tokenized = str([round(e, 3) for e in bbox_coords[i]])
+        bbox_answer += f"{obj_bbox_names[i]}: {bbox_coord_tokenized}"
+        if i < len(obj_bbox_names) - 1:
+            bbox_answer += ", "
+    return (f"What are the relevant objects and their bounding boxes to {lang}?", bbox_answer)
+
+
+def _get_low_level_motion_qa(rlds_batch: Dict[str, Any], lang: str) -> Tuple[str, str]:
+    low_level_motion = rlds_batch['language_motions_future'].decode().split('|')[0]
+    return (f"What motion should the robot do to {lang}?", low_level_motion)
+
+
+def _get_obj_pose_answer(rlds_batch: Dict[str, Any], lang: str) -> Tuple[str, str]:
+    obj_bbox_names = rlds_batch['obj_bbox_names'].decode().split('|')
+    dyn_obj_names = rlds_batch['dynamic_objects'].decode().split('|')
+    obj_pose_answer = ""
+    for i, obj_name in enumerate(obj_bbox_names):
+        if obj_name in dyn_obj_names:
+            obj_pose_answer += f"{obj_name}: "
+            obj_pose_answer += str([(round(x, 3), round(y, 3)) for x, y in rlds_batch['obj_poses'][:, i]])
+            obj_pose_answer += ", "
+    obj_pose_answer = obj_pose_answer[:-2]
+    return (f"What are the relevant objects, and what should their traces be to {lang}?", obj_pose_answer)
+
+
+def _get_ee_pose_2D_answer(rlds_batch: Dict[str, Any], lang: str) -> Tuple[str, str]:
+    ee_pose_2D_answer = str([(round(x, 3), round(y, 3)) for x, y in rlds_batch['ee_pose_2D']])
+    return (f"What should the end-effector's 2D trace be to {lang}?", ee_pose_2D_answer)
+
+
+AUX_TASK_QA_FUNCTIONS = {
+    "bbox": _get_bbox_qa,
+    "low_level_motion": _get_low_level_motion_qa,
+    "obj_pose": _get_obj_pose_answer,
+    "ee_pose_2D": _get_ee_pose_2D_answer,
+}
+
 
 @dataclass
-class RLDSBatchTransform:
-    action_tokenizer: ActionTokenizer
-    base_tokenizer: PreTrainedTokenizerBase
+class BaseRLDSTransform:
+    tokenizer: PreTrainedTokenizerBase
     image_transform: ImageTransform
     prompt_builder_fn: Type[PromptBuilder]
-    image_window_size: int = 1
-    predict_stop_token: bool = True
-    prob_predict_bbox: float = 0.5
+    # Optional parameters with default values 
+    image_window_size: int
+    predict_stop_token: bool
+
+    def _process_image(self, rlds_batch: Dict[str, Any]) -> Image.Image:
+        """Process image(s) from RLDS batch based on window size."""
+        if self.image_window_size == 1:
+            return Image.fromarray(rlds_batch["observation"]["image_primary"][0])
+        return [Image.fromarray(rlds_batch["observation"]["image_primary"][t]) for t in range(self.image_window_size)]
+
+    def _create_conversation(self, qa_pairs: List[Tuple[str, str]]) -> Tuple[List[Dict[str, str]], List[int]]:
+        """Create conversation turns from question and answer pairs.
+        
+        Args:
+            qa_pairs: List of (question, answer) tuples
+            
+        Returns:
+            conversation: List of conversation turns with 'from' and 'value'
+            answer_token_lengths: List of token lengths for each answer
+        """
+        conversation = []
+        answer_token_lengths = []
+        
+        for question, answer in qa_pairs:
+            conversation.append({"from": "human", "value": question})
+            conversation.append({"from": "gpt", "value": answer})
+            # Tokenize the answer to get token length
+            tokenized_answer = self.tokenizer(answer, add_special_tokens=False)
+            answer_token_lengths.append(len(tokenized_answer["input_ids"]))
+            
+        return conversation, answer_token_lengths
+
+    def _process_tokens(self, conversation: List[Dict[str, str]], answer_token_lengths: List[int]) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Process tokens and create input_ids and labels.
+
+        Args:
+            conversation: List of conversation turns
+            answer_token_lengths: List of number of tokens in each answer
+
+        Returns:
+            input_ids_tensor: Tokenized input IDs
+            labels: Labels tensor with target tokens marked and others as IGNORE_INDEX
+            num_end_tokens: Number of end tokens
+        """
+        prompt_builder = self.prompt_builder_fn("openvla")
+        gpt_answers = []
+        
+        # Build the prompt and keep track of 'gpt' answers
+        for turn in conversation:
+            prompt_builder.add_turn(turn["from"], turn["value"])
+            if turn["from"] == "gpt":
+                gpt_answers.append(turn["value"])
+
+        # Tokenize with offsets
+        tokenized = self.tokenizer(
+            prompt_builder.get_prompt(),
+            add_special_tokens=True,
+            return_offsets_mapping=True
+        )
+        input_ids = torch.tensor(tokenized["input_ids"], dtype=torch.long)
+        labels = torch.full_like(input_ids, IGNORE_INDEX)
+
+        # Get the full prompt text
+        full_text = prompt_builder.get_prompt()
+
+        # Find the positions of 'gpt' answers in the text
+        offset_mapping = tokenized["offset_mapping"]
+        current_search_start = 0
+        for answer in gpt_answers:
+            # Locate the start index of the answer in the full text
+            start_idx = full_text.find(answer, current_search_start)
+            if start_idx == -1:
+                raise ValueError("Could not find the start of the answer in the prompt.")
+            end_idx = start_idx + len(answer)
+            current_search_start = end_idx
+
+            # Assign labels to the tokens corresponding to the answer
+            for i, (start, end) in enumerate(offset_mapping):
+                if start >= end_idx:
+                    break
+                if start >= start_idx and end <= end_idx:
+                    labels[i] = input_ids[i]
+
+        # Handle end tokens if prediction is required
+        num_end_tokens = 1
+        if isinstance(self.tokenizer, Qwen2TokenizerFast):
+            num_end_tokens = 2
+
+        if self.predict_stop_token and len(input_ids) >= num_end_tokens:
+            labels[-num_end_tokens:] = input_ids[-num_end_tokens:]
+
+        return input_ids, labels, num_end_tokens
+
+
+@dataclass
+class RLDSBatchTransform(BaseRLDSTransform):
+    # New required parameter
+    action_tokenizer: ActionTokenizer
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
         dataset_name, action = rlds_batch["dataset_name"], rlds_batch["action"]
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        img = self._process_image(rlds_batch)
 
-        # either a single or multi image, depending on image_window_size
-        if self.image_window_size == 1:
-            img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
+        if self.action_tokenizer.required_future_horizon == 0:
+            action = action[-1]
         else:
-            img = [Image.fromarray(rlds_batch["observation"]["image_primary"][t]) for t in range(self.image_window_size)]
+            action = action[-self.action_tokenizer.required_future_horizon - 1:]
 
-        
-        # Randomly choose whether to predict bbox or action based on probability
-        predict_bbox_this_time = np.random.random() < self.prob_predict_bbox
+        tokenized_action = self.action_tokenizer(action)
+        conversation, answer_token_lengths = self._create_conversation([
+            (f"What action should the robot take to {lang}?", tokenized_action)
+        ])
 
-        conversation = []
+        input_ids, labels, _ = self._process_tokens(conversation, answer_token_lengths)
+        pixel_values = self.image_transform(img)
+        transform_types = np.ones(len(AUX_TASK_QA_FUNCTIONS) + 1, dtype=np.int32) * -1
+        transform_types[0] = 0
+        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, transform_type=transform_types)
 
-        if predict_bbox_this_time:
-            obj_bbox_names = rlds_batch["obj_bbox_names"].decode().split("|")
-            bbox_coords = rlds_batch["obj_bboxes"] # shape (MAX_OBJECTS, 4)
-            # bbox_coords = 2*bbox_coords - 1 # normalize to [-1, 1]
-            bbox_answer = ""
-            bbox_raw_tokens = []
-            for i in range(len(obj_bbox_names)):
-                # bbox_coord_tokenized = self.action_tokenizer(bbox_coords[i])
-                bbox_coord_tokenized = str([round(e, 3) for e in bbox_coords[i]])
-                bbox_answer += f"{obj_bbox_names[i]}: {bbox_coord_tokenized}"
-                if i < len(obj_bbox_names) - 1:
-                    bbox_answer += ", "
-            
-            bbox_raw_tokens = self.base_tokenizer(bbox_answer)["input_ids"]
-            conversation.extend([
-                {"from": "human", "value": f"What are the relevant objects and their bounding boxes?"},
-                {"from": "gpt", "value": bbox_answer}, 
-            ])
-            num_answer_tokens = len(bbox_raw_tokens)
 
-        # Only add action conversation if we're not predicting bbox
-        else:
-            # if there is no action horizon, remove it here.
-            
-            if self.action_tokenizer.required_future_horizon == 0:
-                action = action[-1]
-            else:
-                # get the last FH + 1 actions (current action + future ones) if required
-                action = action[-self.action_tokenizer.required_future_horizon - 1:]
+@dataclass
+class RLDSAuxTransform(BaseRLDSTransform):
+    image_window_size: int
+    predict_stop_token: bool
+    aux_task_type: str
 
-            tokenized_action = self.action_tokenizer(action)
-            raw_action_tokens = self.base_tokenizer(tokenized_action)["input_ids"]
+    def __post_init__(self):
+        assert self.aux_task_type in AUX_TASK_QA_FUNCTIONS, f"Invalid aux task type: {self.aux_task_type}!"
 
-            conversation.extend([
-                {"from": "human", "value": f"What action should the robot take to {lang}?"},
-                {"from": "gpt", "value": tokenized_action}, 
-            ])
-            num_answer_tokens = len(raw_action_tokens)
+    def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
+        """Converts a RLDS batch to the format expected by the OpenVLA collator/models for aux prediction."""
+        dataset_name = rlds_batch["dataset_name"]
+        lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        img = self._process_image(rlds_batch)
 
-        # Construct Chat-based Prompt
-        prompt_builder = self.prompt_builder_fn("openvla")
-        for turn in conversation:
-            prompt_builder.add_turn(turn["from"], turn["value"])
+        aux_question, aux_answer = AUX_TASK_QA_FUNCTIONS[self.aux_task_type](rlds_batch, lang)
+        conversation, answer_token_lengths = self._create_conversation([
+            (aux_question, aux_answer)
+        ])
 
-        # Tokenize (w/ `base_tokenizer`)
-        input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
-        labels = list(input_ids)
+        input_ids, labels, _ = self._process_tokens(conversation, answer_token_lengths)
+        pixel_values = self.image_transform(img)
+        transform_types = np.ones(len(AUX_TASK_QA_FUNCTIONS) + 1, dtype=np.int32) * -1
+        transform_types[0] = sorted(AUX_TASK_QA_FUNCTIONS.keys()).index(self.aux_task_type) + 1
+        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, transform_type=transform_types)
 
-        # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
-        input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
+
+@dataclass
+class ChainedTransform(BaseRLDSTransform):
+    action_tokenizer: ActionTokenizer
+    aux_task_types: List[Tuple[str, str]]
+
+    def __post_init__(self):
+        assert len(self.aux_task_types) > 0, "Must specify at least one aux task type!"
+        assert len(self.aux_task_types) <= len(AUX_TASK_QA_FUNCTIONS), "Cannot specify more aux task types than available!"
+        for aux_task_type in self.aux_task_types:
+            assert aux_task_type in AUX_TASK_QA_FUNCTIONS, f"Invalid aux task type: {aux_task_type}!"
+
+    def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
+        """Chains bbox and action prediction in a CoT way with separate supervision."""
+        dataset_name = rlds_batch["dataset_name"]
+        lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        img = self._process_image(rlds_batch)
         pixel_values = self.image_transform(img)
 
-        # critical, some tokenizers have different numbers of "end tokens".
-        num_end_tokens = 1
-        if isinstance(self.base_tokenizer, Qwen2TokenizerFast):
-            # Qwen has <|im_end|><|endoftext|> for example
-            num_end_tokens = 2
-
-        labels[: -(num_answer_tokens + num_end_tokens)] = IGNORE_INDEX
-        if not self.predict_stop_token:
-            labels[-num_end_tokens:] = IGNORE_INDEX
-
+        # First get bbox answer
+        qa_pairs = []
+        transform_types = np.ones(len(AUX_TASK_QA_FUNCTIONS) + 1, dtype=np.int32) * -1
+        for i, aux_task_type in enumerate(self.aux_task_types):
+            aux_task_question, aux_task_answer = AUX_TASK_QA_FUNCTIONS[aux_task_type](rlds_batch, lang)
+            qa_pairs.append((aux_task_question, aux_task_answer))
+            transform_types[i] = sorted(AUX_TASK_QA_FUNCTIONS.keys()).index(aux_task_type) + 1
+        transform_types[i + 1] = 0
         
-        # if predict_bbox_this_time:
-        #     # Find the bbox tokens in the sequence and unmask them
-        #     bbox_str = self.base_tokenizer.decode(bbox_raw_tokens)
-        #     bbox_start = prompt_builder.get_prompt().find(bbox_str)
-        #     if bbox_start != -1:
-        #         bbox_token_start = len(self.base_tokenizer.encode(prompt_builder.get_prompt()[:bbox_start]))
-        #         labels[bbox_token_start:bbox_token_start + len(bbox_raw_tokens)] = input_ids[bbox_token_start:bbox_token_start + len(bbox_raw_tokens)]
-        # else:
-        #     # Unmask the action tokens
-        #     action_str = tokenized_action
-        #     action_start = prompt_builder.get_prompt().rfind(action_str)
-        #     if action_start != -1:
-        #         action_token_start = len(self.base_tokenizer.encode(prompt_builder.get_prompt()[:action_start]))
-        #         labels[action_token_start:action_token_start + len(raw_action_tokens)] = input_ids[action_token_start:action_token_start + len(raw_action_tokens)]
+        # Then get action answer
+        action = rlds_batch["action"]
+        if self.action_tokenizer.required_future_horizon == 0:
+            action = action[-1]
+        else:
+            action = action[-self.action_tokenizer.required_future_horizon - 1:]
+        tokenized_action = self.action_tokenizer(action)
 
-        # # Optionally unmask the stop tokens
-        # if self.predict_stop_token:
-        #     labels[-num_end_tokens:] = input_ids[-num_end_tokens:]
+        # Create conversation with bbox and action
+        conversation, answer_token_lengths = self._create_conversation(qa_pairs + [
+            (f"Given this information, what action should the robot take?", tokenized_action)
+        ])
 
-        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name)
-
+        input_ids, labels, _ = self._process_tokens(conversation, answer_token_lengths)
+        return dict(
+            pixel_values=pixel_values,
+            input_ids=input_ids,
+            labels=labels,
+            dataset_name=dataset_name,
+            transform_type=transform_types
+        )
+    
 
 class RLDSDataset(IterableDataset):
     def __init__(
         self,
         data_root_dir: Path,
         data_mix: str,
-        batch_transform: RLDSBatchTransform,
+        batch_transforms: List[Tuple[RLDSBatchTransform, float]], 
         resize_resolution: Tuple[int, int],
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
         future_action_window_size: int = 0,
+        future_obj_pose_window_size: int = 0,
+        future_2D_trace_window_size: int = 0,
+        obj_pose_stride: int = 1,
+        ee_pose_2D_stride: int = 1,
         image_window_size: int = 1,
     ) -> None:
         """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
-        self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
+        self.data_root_dir, self.data_mix, self.batch_transforms = data_root_dir, data_mix, batch_transforms
+
+        if not isinstance(self.batch_transforms, list):
+            self.batch_transforms = [(self.batch_transforms, 1.0)]
+        else:
+            assert abs(sum(weight for _, weight in self.batch_transforms) - 1.0) < 1e-6, "Batch transform weights must sum to 1.0!"
 
         # Configure RLDS Dataset(s)
         if self.data_mix in OXE_NAMED_MIXTURES:
@@ -177,6 +321,10 @@ class RLDSDataset(IterableDataset):
             traj_transform_kwargs=dict(
                 window_size=image_window_size,                        # If we wanted to feed / predict more than one step
                 future_action_window_size=future_action_window_size,  # For action chunking
+                future_obj_pose_window_size=future_obj_pose_window_size,
+                future_2D_trace_window_size=future_2D_trace_window_size,
+                obj_pose_stride=obj_pose_stride,
+                ee_pose_2D_stride=ee_pose_2D_stride,
                 skip_unlabeled=True,                                  # Skip trajectories without language labels
                 goal_relabeling_strategy="uniform",                   # Goals are currently unused
             ),
@@ -218,8 +366,11 @@ class RLDSDataset(IterableDataset):
         return make_interleaved_dataset(**rlds_config)
 
     def __iter__(self) -> Dict[str, Any]:
+        transforms, weights = zip(*self.batch_transforms)
         for rlds_batch in self.dataset.as_numpy_iterator():
-            yield self.batch_transform(rlds_batch)
+            # Select a random transform using fixed ordering of transforms and weights
+            transform = np.random.choice(transforms, p=weights)
+            yield transform(rlds_batch)
 
     def __len__(self) -> int:
         return self.dataset_length
@@ -242,15 +393,16 @@ class EpisodicRLDSDataset(RLDSDataset):
             traj_transform_kwargs=rlds_config["traj_transform_kwargs"],
             frame_transform_kwargs=rlds_config["frame_transform_kwargs"],
         )
-
     def __iter__(self) -> Dict[str, Any]:
+        transforms, weights = zip(*self.batch_transforms)
         for rlds_batch in self.dataset.as_numpy_iterator():
+            # Select a random transform using fixed ordering of transforms and weights
+            transform = np.random.choice(transforms, p=weights)
             out = [
-                self.batch_transform(tree_map(lambda x: x[i], rlds_batch))  # noqa: B023
+                transform(tree_map(lambda x: x[i], rlds_batch))  # noqa: B023
                 for i in range(rlds_batch["action"].shape[0])
             ]
             yield out
-
 
 class DummyDataset(Dataset):
     def __init__(

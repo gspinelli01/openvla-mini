@@ -10,8 +10,16 @@ from typing import Dict
 
 import tensorflow as tf
 
-
-def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int = 0) -> Dict:
+@tf.autograph.experimental.do_not_convert
+def chunk_act_obs(
+    traj: Dict, 
+    window_size: int, 
+    future_action_window_size: int = 0, 
+    future_obj_pose_window_size: int = 0,
+    future_2D_trace_window_size: int = 0,
+    obj_pose_stride: int = 1,
+    ee_pose_2D_stride: int = 1,
+) -> Dict:
     """
     Chunks actions and observations into the given window_size.
 
@@ -21,6 +29,10 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
     action, and `future_action_window_size` actions from the future. "pad_mask" is added to "observation" and
     indicates whether an observation should be considered padding (i.e. if it had come from a timestep
     before the start of the trajectory).
+
+    Striding is applied to "obj_pose" and "ee_pose_2D" to control the step size between indices in the chunking
+    process. A stride of 1 means every index is included, while a stride of n means every nth index is included.
+    This allows for downsampling of the data in these specific chunks.
     """
     traj_len = tf.shape(traj["action"])[0]
     action_dim = traj["action"].shape[-1]
@@ -36,6 +48,25 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
         [traj_len, window_size + future_action_window_size],
     )
 
+    # Calculate the number of chunks based on stride with ceiling division
+    obj_pose_chunks_size = (window_size + future_obj_pose_window_size + obj_pose_stride - 1) // obj_pose_stride
+    obj_pose_chunk_indices = tf.broadcast_to(
+        tf.range(-window_size + 1, 1 + future_obj_pose_window_size, obj_pose_stride),
+        [traj_len, obj_pose_chunks_size],
+    ) + tf.broadcast_to(
+        tf.range(traj_len)[:, None],
+        [traj_len, obj_pose_chunks_size],
+    )
+
+    ee_pose_chunks_size = (window_size + future_2D_trace_window_size + ee_pose_2D_stride - 1) // ee_pose_2D_stride
+    ee_pose_chunk_indices = tf.broadcast_to(
+        tf.range(-window_size + 1, 1 + future_2D_trace_window_size, ee_pose_2D_stride),
+        [traj_len, ee_pose_chunks_size],
+    ) + tf.broadcast_to(
+        tf.range(traj_len)[:, None],
+        [traj_len, ee_pose_chunks_size],
+    )
+
     floored_chunk_indices = tf.maximum(chunk_indices, 0)
 
     if "timestep" in traj["task"]:
@@ -44,9 +75,21 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
         goal_timestep = tf.fill([traj_len], traj_len - 1)
 
     floored_action_chunk_indices = tf.minimum(tf.maximum(action_chunk_indices, 0), goal_timestep[:, None])
+    floored_obj_pose_chunk_indices = tf.minimum(tf.maximum(obj_pose_chunk_indices, 0), goal_timestep[:, None])
+    floored_ee_pose_chunk_indices = tf.minimum(tf.maximum(ee_pose_chunk_indices, 0), goal_timestep[:, None])
 
     traj["observation"] = tf.nest.map_structure(lambda x: tf.gather(x, floored_chunk_indices), traj["observation"])
     traj["action"] = tf.gather(traj["action"], floored_action_chunk_indices)
+    
+    # Convert bboxes to center poses and chunk
+    bboxes = tf.cast(traj["obj_bboxes"], tf.float32)
+    center_x = (bboxes[..., 0] + bboxes[..., 2]) / 2.0  # (min_x + max_x) / 2
+    center_y = (bboxes[..., 1] + bboxes[..., 3]) / 2.0  # (min_y + max_y) / 2
+    center_poses = tf.stack([center_x, center_y], axis=-1)
+    traj["obj_poses"] = tf.gather(center_poses, floored_obj_pose_chunk_indices)
+    
+    # Chunk ee_pose_2D
+    traj["ee_pose_2D"] = tf.gather(traj["ee_pose_2D"], floored_ee_pose_chunk_indices)
 
     # indicates whether an entire observation is padding
     traj["observation"]["pad_mask"] = chunk_indices >= 0

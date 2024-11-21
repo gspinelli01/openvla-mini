@@ -37,7 +37,7 @@ tf.config.set_visible_devices([], "GPU")
 
 # ruff: noqa: B006
 # @tf.function(experimental_relax_shapes=True)
-# @tf.autograph.experimental.do_not_convert
+@tf.autograph.experimental.do_not_convert
 def make_dataset_from_rlds(
     name: str,
     data_dir: str,
@@ -180,7 +180,6 @@ def make_dataset_from_rlds(
                     f"Language key {language_key} has dtype {traj[language_key].dtype}, " "but it must be tf.string."
                 )
             task["language_instruction"] = traj.pop(language_key)
-
         traj = {
             "observation": new_obs,
             "task": task,
@@ -188,6 +187,9 @@ def make_dataset_from_rlds(
             "dataset_name": tf.repeat(name, traj_len),
             "obj_bbox_names": traj["obj_bbox_names"],
             "obj_bboxes": tf.cast(traj["obj_bboxes"], tf.float32),
+            "language_motions_future": traj["language_motions_future"],
+            "dynamic_objects": traj["dynamic_objects"],
+            "ee_pose_2D": tf.cast(traj["ee_pose_2D"], tf.float32),
         }
 
         if absolute_action_mask is not None:
@@ -263,6 +265,10 @@ def apply_trajectory_transforms(
     goal_relabeling_kwargs: dict = {},
     window_size: int = 1,
     future_action_window_size: int = 0,
+    future_obj_pose_window_size: int = 0,
+    future_2D_trace_window_size: int = 0,
+    obj_pose_stride: int = 1,
+    ee_pose_2D_stride: int = 1,
     subsample_length: Optional[int] = None,
     skip_unlabeled: bool = False,
     max_action: Optional[float] = None,
@@ -289,6 +295,12 @@ def apply_trajectory_transforms(
         window_size (int, optional): The length of the snippets that trajectories are chunked into.
         future_action_window_size (int, optional): The number of future actions beyond window_size to include
             in the chunked actions.
+        future_obj_pose_window_size (int, optional): The number of future object poses beyond window_size to include
+            in the chunked object poses.
+        future_2D_trace_window_size (int, optional): The number of future 2D traces beyond window_size to include
+            in the chunked 2D traces.
+        obj_pose_stride (int, optional): The step size between indices in the chunked object poses.
+        ee_pose_2D_stride (int, optional): The step size between indices in the chunked 2D traces.
         subsample_length (int, optional): If provided, trajectories longer than this will be subsampled to
             this length (after goal relabeling and chunking).
         skip_unlabeled (bool, optional): Whether to skip trajectories with no language labels.
@@ -342,6 +354,10 @@ def apply_trajectory_transforms(
             traj_transforms.chunk_act_obs,
             window_size=window_size,
             future_action_window_size=future_action_window_size,
+            future_obj_pose_window_size=future_obj_pose_window_size,
+            future_2D_trace_window_size=future_2D_trace_window_size,
+            obj_pose_stride=obj_pose_stride,
+            ee_pose_2D_stride=ee_pose_2D_stride,
         ),
         num_parallel_calls,
     )

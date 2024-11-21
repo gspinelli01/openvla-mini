@@ -6,7 +6,7 @@ exports individual functions for clear control flow.
 """
 
 from pathlib import Path
-from typing import Tuple, Type
+from typing import Tuple, Type, List
 
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
@@ -16,7 +16,12 @@ from prismatic.models.backbones.vision import ImageTransform
 from prismatic.models.backbones.vision.base_vision import WrapSequenceImageTransform
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ACTION_TOKENIZERS, ActionTokenizer
-from prismatic.vla.datasets import EpisodicRLDSDataset, RLDSBatchTransform, RLDSDataset
+from prismatic.vla.datasets import EpisodicRLDSDataset, RLDSDataset
+from prismatic.vla.datasets.datasets import (
+    RLDSBatchTransform, 
+    RLDSAuxTransform,
+    ChainedTransform,
+)
 
 
 def get_vla_dataset_and_collator(
@@ -34,8 +39,12 @@ def get_vla_dataset_and_collator(
     image_aug: bool = False,
     action_tokenizer: str = "action_tokenizer",
     future_action_window_size: int = 0,
+    future_obj_pose_window_size: int = 0,
+    future_2D_trace_window_size: int = 0,
+    obj_pose_stride: int = 1,
+    ee_pose_2D_stride: int = 1,
     image_window_size: int = 1,
-    prob_predict_bbox: float = 0.0,
+    transform_types: str = "action",
 ) -> Tuple[Dataset, ActionTokenizer, PaddedCollatorForActionPrediction]:
     """Initialize RLDS Dataset (wraps TFDS), ActionTokenizer, and initialize transform/collation functions."""
 
@@ -48,15 +57,32 @@ def get_vla_dataset_and_collator(
     if isinstance(image_transform, WrapSequenceImageTransform):
         image_window_size = max(image_transform.sequence_len, image_window_size)
 
-    batch_transform = RLDSBatchTransform(
-        action_tokenizer,
-        tokenizer,
-        image_transform,
-        prompt_builder_fn,
-        predict_stop_token=predict_stop_token,
-        image_window_size=image_window_size,
-        prob_predict_bbox=prob_predict_bbox,
-    )
+    transform_base_args = {
+        "tokenizer": tokenizer,
+        "image_transform": image_transform,
+        "prompt_builder_fn": prompt_builder_fn,
+        "predict_stop_token": predict_stop_token,
+        "image_window_size": image_window_size,
+    }
+
+    batch_transforms = []
+    # remove whitespace
+    transform_types = transform_types.replace(" ", "")
+    transform_types = transform_types.split(",")
+    for transform_type in transform_types:
+        if '|' in transform_type:
+            chained_transforms = transform_type.split("|")
+            rlds_transform = ChainedTransform(
+                **transform_base_args,
+                action_tokenizer=action_tokenizer,
+                aux_task_types=chained_transforms,
+            )
+        elif transform_type == "action":
+            rlds_transform = RLDSBatchTransform(**transform_base_args, action_tokenizer=action_tokenizer)
+        else:
+            rlds_transform = RLDSAuxTransform(**transform_base_args, aux_task_type=transform_type)
+        batch_transforms.append((rlds_transform, 1/len(transform_types)))
+
     collator = PaddedCollatorForActionPrediction(
         tokenizer.model_max_length, tokenizer.pad_token_id, padding_side=padding_side
     )
@@ -66,12 +92,16 @@ def get_vla_dataset_and_collator(
     dataset = cls(
         data_root_dir,
         data_mix,
-        batch_transform,
+        batch_transforms,
         resize_resolution=default_image_resolution[1:],
         shuffle_buffer_size=shuffle_buffer_size,
         train=train,
         image_aug=image_aug,
         future_action_window_size=future_action_window_size,
+        future_obj_pose_window_size=future_obj_pose_window_size,
+        future_2D_trace_window_size=future_2D_trace_window_size,
+        obj_pose_stride=obj_pose_stride,
+        ee_pose_2D_stride=ee_pose_2D_stride,
         image_window_size=image_window_size,
     )
 

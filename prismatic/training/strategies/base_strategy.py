@@ -25,9 +25,14 @@ from prismatic.util import check_bloat16_supported
 from prismatic.util.batching_utils import SplitModalitySampler
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction, PaddedCollatorForLanguageModeling
 from prismatic.vla.action_tokenizer import ActionTokenizer
+from prismatic.vla.datasets.datasets import AUX_TASK_QA_FUNCTIONS
+
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
+
+AUX_TASK_NAMES = sorted(AUX_TASK_QA_FUNCTIONS.keys())
+AUX_TASK_NAMES = ["action"] + AUX_TASK_NAMES
 
 
 # === Abstract Base Class for an arbitrary Training Strategy ===
@@ -195,7 +200,7 @@ class TrainingStrategy(ABC):
                             multimodal_indices=batch["multimodal_indices"],
                         )
                         loss = output.loss
-
+                        
                     # Commit Loss (Prior to Gradient Accumulation Normalization)
                     metrics.commit(loss=loss)
 
@@ -307,7 +312,8 @@ class TrainingStrategy(ABC):
                         pixel_values=batch["pixel_values"],
                         labels=batch["labels"],
                     )
-                    loss = output.loss
+                    loss = output.loss # TODO (ajaysri): for per aux task loss, how to get unreduced loss without recomputing?
+                    transform_types = batch["transform_type"].to(output.loss.device)
 
                 # Commit Loss =>> Backward!
                 metrics.commit(loss=loss)
@@ -324,49 +330,73 @@ class TrainingStrategy(ABC):
                 #   2) Compute boolean "mask" where "labels > 2" (where 2 is ID for `EOS_TOKEN`)
                 #           => If masking out EOS, then it's just "labels != -100 (IGNORE_INDEX)
                 #   3) Compute masked accuracy as `(preds == logits) & mask` --> sum/divide by # unmasked!
-                action_preds = output.logits[:, self.vlm.vision_backbone.num_patches : -1].argmax(dim=2)
-                action_gt = batch["labels"][:, 1:].to(action_preds.device)
-                mask = (action_tokenizer.action_token_end_idx > action_gt) & (action_gt > action_tokenizer.action_token_begin_idx)
+                unique_transform_types = transform_types.unique(dim=0)
+                # remove all rows that don't have 0
+                unique_transform_types = unique_transform_types[(unique_transform_types == 0).any(dim=1)]
+                num_unique_transform_types = len(unique_transform_types)
+                for i in range(num_unique_transform_types + 1):
+                    if i < num_unique_transform_types:
+                        transform_type = unique_transform_types[i]
+                        # filter out all but the current transform type
+                        mask = torch.all(transform_types == transform_type, dim=1)
+                        transform_type_str = " -> ".join([AUX_TASK_NAMES[int(t)] for t in transform_type if t >= 0])
+                    else:
+                        mask = (transform_types == 0).any(dim=1)
+                        transform_type_str = "all"
 
-                # Compute Accuracy
-                correct_preds = (action_preds == action_gt) & mask
-                action_accuracy = correct_preds.sum().float() / mask.sum().float()
+                    action_preds = output.logits[:, self.vlm.vision_backbone.num_patches : -1].argmax(dim=2)
+                    action_preds = action_preds[mask]
+                    action_gt = batch["labels"][:, 1:].to(action_preds.device)
+                    action_gt = action_gt[mask]
 
-                # Compute L1 Loss on Predicted (Continuous) Actions
-                continuous_actions_pred = torch.tensor(
-                    action_tokenizer.decode_token_ids_to_actions(action_preds[mask].cpu().numpy())
-                )
-                continuous_actions_gt = torch.tensor(
-                    action_tokenizer.decode_token_ids_to_actions(action_gt[mask].cpu().numpy())
-                )
-                action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
+                    if action_preds.numel() > 0 and action_gt.numel() > 0:
+                        mask = (action_tokenizer.action_token_end_idx > action_gt) & (action_gt > action_tokenizer.action_token_begin_idx)
 
-                # Commit Metrics
-                metrics.commit(action_accuracy=action_accuracy, l1_loss=action_l1_loss, update_step_time=True)
+                        # Compute Accuracy
+                        correct_preds = (action_preds == action_gt) & mask
+                        action_accuracy = correct_preds.sum().float() / mask.sum().float()
 
-                # Compute metrics per dataset --> only on rank_zero since we don't log them on other workers anyways
-                if overwatch.is_rank_zero():
-                    datasets = set(batch["dataset_names"])
-                    if len(datasets) > 1:
-                        for ds in datasets:
-                            ds_mask = torch.tensor([elem == ds for elem in batch["dataset_names"]])
-                            action_accuracy_ds = correct_preds[ds_mask].sum().float() / mask[ds_mask].sum().float()
-                            continuous_actions_pred_ds = torch.tensor(
-                                action_tokenizer.decode_token_ids_to_actions(
-                                    action_preds[ds_mask][mask[ds_mask]].cpu().numpy()
-                                )
-                            )
-                            continuous_actions_gt_ds = torch.tensor(
-                                action_tokenizer.decode_token_ids_to_actions(
-                                    action_gt[ds_mask][mask[ds_mask]].cpu().numpy()
-                                )
-                            )
-                            action_l1_loss_ds = torch.nn.functional.l1_loss(
-                                continuous_actions_pred_ds, continuous_actions_gt_ds
-                            )
-                            metrics.commit_for_dataset(
-                                dataset_name=ds.decode(), action_accuracy=action_accuracy_ds, l1_loss=action_l1_loss_ds
-                            )
+                        # Compute L1 Loss on Predicted (Continuous) Actions
+                        continuous_actions_pred = torch.tensor(
+                            action_tokenizer.decode_token_ids_to_actions(action_preds[mask].cpu().numpy())
+                        )
+                        continuous_actions_gt = torch.tensor(
+                            action_tokenizer.decode_token_ids_to_actions(action_gt[mask].cpu().numpy())
+                        )
+                        action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
+
+                        # Commit Metrics
+                        if transform_type_str != "all":
+                            metrics.commit_for_dataset(dataset_name=transform_type_str, action_accuracy=action_accuracy, l1_loss=action_l1_loss, update_step_time=True)
+                        else:
+                            metrics.commit(action_accuracy=action_accuracy, l1_loss=action_l1_loss, update_step_time=True)
+
+                        # Compute metrics per dataset --> only on rank_zero since we don't log them on other workers anyways
+                        if overwatch.is_rank_zero():
+                            datasets = set(batch["dataset_names"])
+                            if len(datasets) > 1:
+                                for ds in datasets:
+                                    ds_mask = torch.tensor([elem == ds for elem in batch["dataset_names"]])
+                                    action_accuracy_ds = correct_preds[ds_mask].sum().float() / mask[ds_mask].sum().float()
+                                    continuous_actions_pred_ds = torch.tensor(
+                                        action_tokenizer.decode_token_ids_to_actions(
+                                            action_preds[ds_mask][mask[ds_mask]].cpu().numpy()
+                                        )
+                                    )
+                                    continuous_actions_gt_ds = torch.tensor(
+                                        action_tokenizer.decode_token_ids_to_actions(
+                                            action_gt[ds_mask][mask[ds_mask]].cpu().numpy()
+                                        )
+                                    )
+                                    action_l1_loss_ds = torch.nn.functional.l1_loss(
+                                        continuous_actions_pred_ds, continuous_actions_gt_ds
+                                    )
+                                    metrics.commit_for_dataset(
+                                        dataset_name=transform_type_str + " [" + ds.decode() + "]", action_accuracy=action_accuracy_ds, l1_loss=action_l1_loss_ds
+                                    )
+                    else:
+                        # Handle the case where action_preds or action_gt are empty
+                        metrics.commit(action_accuracy=torch.tensor(torch.nan), l1_loss=torch.tensor(torch.nan), update_step_time=True)
 
                 # === Gradient Step ===
 

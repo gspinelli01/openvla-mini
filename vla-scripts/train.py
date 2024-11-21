@@ -42,6 +42,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
 
+DATA_DIR = os.environ["DATA_DIR"]
 
 @dataclass
 class TrainConfig:
@@ -56,7 +57,7 @@ class TrainConfig:
     data_root_dir: Path = Path(                                     # Path to Open-X dataset directory
         "datasets/open-x-embodiment"
     )
-    run_root_dir: Path = Path("runs")                               # Path to directory to store logs & checkpoints
+    run_root_dir: Path = Path(DATA_DIR, "runs")                               # Path to directory to store logs & checkpoints
 
     # Resume Run Parameters
     pretrained_checkpoint: Optional[Path] = None                    # Absolute Path to Checkpoint
@@ -80,7 +81,7 @@ class TrainConfig:
     # TODO (ajaysri): debug wandb
     wandb_project: str = "prismatic"                                # Name of W&B project to log to (use default!)
     wandb_entity: str = "ajaysridhar"                               # Name of entity to log under
-    prob_predict_bbox: float = 0.                                   # Probability to predict bbox
+    
 
     def __post_init__(self) -> None:
         """Lift optimization parameters from `self.vla` for ease of use =>> validate on `expected_world_size`"""
@@ -210,9 +211,13 @@ def train(cfg: TrainConfig) -> None:
         prompt_builder_fn=vlm.llm_backbone.prompt_builder_fn,
         default_image_resolution=vlm.vision_backbone.default_image_resolution,
         shuffle_buffer_size=cfg.vla.shuffle_buffer_size,
+        transform_types=cfg.vla.transform_types,
         image_aug=cfg.image_aug,
         action_tokenizer=cfg.action_tokenizer,
-        predict_bbox=cfg.prob_predict_bbox,
+        future_obj_pose_window_size=cfg.vla.future_obj_pose_window_size,
+        future_2D_trace_window_size=cfg.vla.future_2D_trace_window_size,
+        obj_pose_stride=cfg.vla.obj_pose_stride,
+        ee_pose_2D_stride=cfg.vla.ee_pose_2D_stride,
     )
 
     # Save dataset statistics for de-normalization at inference time
