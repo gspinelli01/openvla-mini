@@ -70,8 +70,9 @@ def get_vla_dataset_and_collator(
     transform_types = transform_types.replace(" ", "")
     transform_types = transform_types.split(",")
     for transform_type in transform_types:
-        if '|' in transform_type:
-            chained_transforms = transform_type.split("|")
+        if '->' in transform_type:
+            chained_transforms = transform_type.split("->")
+            chained_transforms.remove("")
             rlds_transform = ChainedTransform(
                 **transform_base_args,
                 action_tokenizer=action_tokenizer,
