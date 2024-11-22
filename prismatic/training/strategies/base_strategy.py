@@ -338,16 +338,16 @@ class TrainingStrategy(ABC):
                     if i < num_unique_transform_types:
                         transform_type = unique_transform_types[i]
                         # filter out all but the current transform type
-                        mask = torch.all(transform_types == transform_type, dim=1)
+                        action_mask = torch.all(transform_types == transform_type, dim=1)
                         transform_type_str = " -> ".join([AUX_TASK_NAMES[int(t)] for t in transform_type if t >= 0])
                     else:
-                        mask = (transform_types == 0).any(dim=1)
+                        action_mask = (transform_types == 0).any(dim=1)
                         transform_type_str = "all"
 
                     action_preds = output.logits[:, self.vlm.vision_backbone.num_patches : -1].argmax(dim=2)
-                    action_preds = action_preds[mask]
+                    action_preds = action_preds[action_mask]
                     action_gt = batch["labels"][:, 1:].to(action_preds.device)
-                    action_gt = action_gt[mask]
+                    action_gt = action_gt[action_mask]
 
                     if action_preds.numel() > 0 and action_gt.numel() > 0:
                         mask = (action_tokenizer.action_token_end_idx > action_gt) & (action_gt > action_tokenizer.action_token_begin_idx)
@@ -373,11 +373,14 @@ class TrainingStrategy(ABC):
 
                         # Compute metrics per dataset --> only on rank_zero since we don't log them on other workers anyways
                         if overwatch.is_rank_zero():
-                            datasets = set(batch["dataset_names"])
+                            datasets = set([batch["dataset_names"][i] for i in range(len(batch["dataset_names"])) if action_mask.tolist()[i]])
                             if len(datasets) > 1:
                                 for ds in datasets:
                                     ds_mask = torch.tensor([elem == ds for elem in batch["dataset_names"]])
-                                    action_accuracy_ds = correct_preds[ds_mask].sum().float() / mask[ds_mask].sum().float()
+                                    try:
+                                        action_accuracy_ds = correct_preds[ds_mask].sum().float() / mask[ds_mask].sum().float()
+                                    except:
+                                        breakpoint()
                                     continuous_actions_pred_ds = torch.tensor(
                                         action_tokenizer.decode_token_ids_to_actions(
                                             action_preds[ds_mask][mask[ds_mask]].cpu().numpy()

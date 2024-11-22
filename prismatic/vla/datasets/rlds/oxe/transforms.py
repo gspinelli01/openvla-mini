@@ -921,4 +921,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_10_no_noops": libero_dataset_transform,
     "libero_90": libero_dataset_transform,
     "libero_90_vla_aux": libero_dataset_transform,
+    "libero_spatial_vla_aux": libero_dataset_transform,
+    "libero_object_vla_aux": libero_dataset_transform,
 }
