@@ -35,6 +35,16 @@ overwatch = initialize_overwatch(__name__)
 IGNORE_INDEX = -100
 
 
+def helper(thing, l=0):
+    p = l * "  "
+    if hasattr(thing, "shape"):
+        print(p, thing.shape)
+    else:
+        print(p, len(thing))
+        for v in thing:
+            helper(v, l + 1)
+
+
 class PrismaticVLM(VLM):
     def __init__(
         self,
@@ -328,10 +338,32 @@ class PrismaticVLM(VLM):
         # Handle Inference (leverage cache, short-circuit on just LLM forward)
         if input_ids.shape[1] == 1 and past_key_values is not None:
             # We're leveraging the cache, so just redirect to `self.llm_backbone` with `input_ids` and `past_key_values`
+            bs, _, seq_len, _ = past_key_values[0][0].shape
+
+            # TODO: Dynamically figure out projected patch attention mask length
+            # from seq_len
+            projected_patch_attention_mask = torch.full(
+                (bs, 256),
+                True,
+                dtype=attention_mask.dtype,
+                device=attention_mask.device,
+            )
+            multimodal_attention_mask = torch.cat(
+                [
+                    attention_mask[:, :1],
+                    projected_patch_attention_mask,
+                    attention_mask[:, 1:],
+                ],
+                dim=1,
+            )
+            
+            position_ids = torch.cumsum(multimodal_attention_mask, dim=1) - 1
+            position_ids = position_ids[:, -input_ids.shape[1]:]
+
             output = self.llm_backbone(
                 input_ids=input_ids,
-                attention_mask=None,
-                position_ids=None,
+                attention_mask=multimodal_attention_mask,
+                position_ids=position_ids,
                 past_key_values=past_key_values,
                 inputs_embeds=None,
                 labels=None,
@@ -340,6 +372,7 @@ class PrismaticVLM(VLM):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
+
             return output
 
         elif input_ids.shape[1] == 1 or pixel_values is None:
@@ -466,11 +499,13 @@ class PrismaticVLM(VLM):
             fused_attention_mask = torch.vstack([multimodal_attention_mask, unimodal_attention_mask])
             fused_labels = torch.vstack([multimodal_labels, unimodal_labels])
 
+        position_ids = torch.cumsum(fused_attention_mask, dim=1) - 1
+
         # Run LLM Forward --> returns CausalLMOutputWithPast!
         return self.llm_backbone(
             input_ids=None,
             attention_mask=fused_attention_mask,
-            position_ids=None,
+            position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=fused_embeddings,
             labels=fused_labels,

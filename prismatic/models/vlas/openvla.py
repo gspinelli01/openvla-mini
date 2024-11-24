@@ -106,6 +106,96 @@ class OpenVLA(PrismaticVLM):
 
         return actions
 
+    @torch.inference_mode()
+    def batch_predict_action(
+        self, images: List[Img], instructions: List[str], unnorm_key: Optional[str] = None, **kwargs: str
+    ) -> np.ndarray:
+        """
+        Core function for VLA inference; maps input image and task instruction to continuous action (de-tokenizes).
+
+        @param image: PIL Image as [height, width, 3]
+        @param instruction: Task instruction string
+        @param unnorm_key: Optional dataset name for retrieving un-normalizing statistics; if None, checks that model
+                           was trained only on a single dataset, and retrieves those statistics.
+
+        @return Unnormalized (continuous) action vector --> end-effector deltas.
+        """
+        image_transform, tokenizer = self.vision_backbone.get_image_transform(), self.llm_backbone.tokenizer
+
+        # Build VLA Prompts
+        prompts = []
+        for instruction in instructions:
+            prompt_builder = self.get_prompt_builder()
+            prompt_builder.add_turn(role="human", message=f"What action should the robot take to {instruction.lower()}?")
+            prompt_text = prompt_builder.get_prompt()
+            prompts.append(prompt_text)
+
+        # Prepare Inputs
+        tokenized = tokenizer(prompts, padding=True, return_tensors="pt")
+        input_ids = tokenized.input_ids.to(self.device)
+        attention_mask = tokenized.attention_mask.to(self.device)
+
+        if isinstance(tokenizer, LlamaTokenizerFast):
+            # If the special empty token ('') does not already appear after the colon (':') token in the prompt
+            # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
+            if not torch.all(input_ids[:, -1] == 29871):
+                input_ids = torch.cat(
+                    (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
+                )
+        elif isinstance(tokenizer, Qwen2TokenizerFast):
+            # do nothing here. I think...
+            pass
+        else:
+            raise ValueError(f"Unsupported `tokenizer` type = {type(tokenizer)}")
+
+        # Preprocess Image
+        pixel_values_list = []
+        for image in images:
+            pixel_values = image_transform(image)
+            pixel_values_list.append(pixel_values)
+            
+        if isinstance(pixel_values, torch.Tensor):
+            # May need to add 
+            batch_pixel_values = torch.stack(pixel_values_list).to(self.device)
+        elif isinstance(pixel_values, dict):
+            batch_pixel_values = {k: torch.stack([pv_dict[k] for pv_dict in pixel_values_list]).to(
+                self.device) for k in pixel_values.keys()}
+        else:
+            raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
+
+        # Invoke super().generate --> taps into `GenerationMixin` which (redirects) to `forward()`
+        autocast_dtype = self.llm_backbone.half_precision_dtype
+        with torch.autocast("cuda", dtype=autocast_dtype, enabled=self.enable_mixed_precision_training):
+            # fmt: off
+            # print(input_ids.shape)
+            # for k, v in pixel_values_dict.items():
+            #     print(k, v.shape)
+            # print(attention_mask.shape)
+            generated_ids = super(PrismaticVLM, self).generate(
+                input_ids=input_ids,                            # Shape: [1, seq]
+                pixel_values=batch_pixel_values,                 # Shape: [1, (opt T,) 3, res, res] or Dict[str, ...]
+                attention_mask=attention_mask,
+                max_new_tokens=self.get_action_dim(unnorm_key),
+                **kwargs
+            )
+            # fmt: on
+
+        # Extract predicted action tokens and translate into (normalized) continuous actions
+        predicted_action_token_ids = generated_ids[:, -self.get_action_dim(unnorm_key) :]
+        normalized_actions = self.action_tokenizer.decode_token_ids_to_actions(predicted_action_token_ids.cpu().numpy())
+
+        # Un-normalize Actions
+        action_norm_stats = self.get_action_stats(unnorm_key)
+        mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
+        action_high, action_low = np.array(action_norm_stats["q99"]), np.array(action_norm_stats["q01"])
+        actions = np.where(
+            mask,
+            0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
+            normalized_actions,
+        )
+
+        return actions
+
     @staticmethod
     def _check_unnorm_key(norm_stats: Dict, unnorm_key: str) -> str:
         if unnorm_key is None:
