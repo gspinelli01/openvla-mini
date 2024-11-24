@@ -240,7 +240,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         ))
 
                     # Save preprocessed image for replay video
+                    # TODO: Implement replay
                     # replay_images.append(img)
+
+                    if cfg.obs_history > 1:
+                        # TODO: Implement obs history
+                        raise NotImplementedError
 
                     # Query model to get action
                     # TODO: Package image processing into its own util function
@@ -255,18 +260,23 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         if cfg.center_crop:
                             raise NotImplementedError
                         
+                        images.append(image)
+                    
+                    actions = model.batch_predict_action(
+                        images, instruction_chunk, unnorm_key=cfg.unnorm_key
+                    )
                     
 
                     # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
-                    action = normalize_gripper_action(action, binarize=True)
+                    actions = normalize_gripper_action(actions, binarize=True)
 
                     # [OpenVLA] The dataloader flips the sign of the gripper action to align with other datasets
                     # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
                     if cfg.model_family in ["openvla", "prismatic"]:
-                        action = invert_gripper_action(action)
+                        actiosn = invert_gripper_action(actions)
 
                     # Execute action in environment
-                    obs, reward, done, info = env.step(action.tolist())
+                    obs, reward, done, info = env.step(actions)
                     if done:
                         task_successes += 1
                         total_successes += 1

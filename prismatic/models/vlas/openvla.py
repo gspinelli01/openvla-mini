@@ -138,10 +138,22 @@ class OpenVLA(PrismaticVLM):
         if isinstance(tokenizer, LlamaTokenizerFast):
             # If the special empty token ('') does not already appear after the colon (':') token in the prompt
             # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
-            if not torch.all(input_ids[:, -1] == 29871):
-                input_ids = torch.cat(
-                    (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
-                )
+            
+            # TODO: We are assuming that none of the prompts in the batch have this token, so we are adding it to
+            # all prompts. 
+            if torch.any(input_ids == 29871):
+                raise NotImplementedError("We are currently assuming none of the input seqs have the special empty token at the end.")
+
+            # Add special empty token to all inputs
+            input_ids = torch.cat(
+                (input_ids, (29871 * torch.ones([input_ids.shape[0], 1])).long().to(input_ids.device)), dim=1
+            )
+            # Append additional true value to attention mask for all inputs
+            attention_mask = torch.cat(
+                (attention_mask, torch.ones([input_ids.shape[0], 1]).to(input_ids.device, dtype=bool)), dim=1
+            )
+            
+
         elif isinstance(tokenizer, Qwen2TokenizerFast):
             # do nothing here. I think...
             pass
