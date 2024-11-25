@@ -171,7 +171,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     task_list = []
 
     def env_generator(task):
-        env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
+        env, task_description = get_libero_env(task, cfg.model_family, resolution=256, ignore_done=True,)
         return env
 
     for task_id in range(num_tasks_in_suite):
@@ -205,8 +205,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
         env_ep_idxs = np.zeros([cfg.num_envs], dtype=int)          # Count which episode the env is on
         env_steps = np.zeros([cfg.num_envs], dtype=int)            # Count how many steps have been done in that episode
         task_successes = np.zeros([cfg.num_envs], dtype=int)       # Count how many successes for each task
+        done = np.zeros([cfg.num_envs], dtype=bool)                # Track if each env is done.
 
         env.reset()
+        env.seed(0) # Always set Libero env seeds to 0, since that's what get_libero_env() does
         curr_initial_states = [initial_states[episode_idx] for initial_states, episode_idx in zip(initial_states_chunk, 
                                                                                                   env_ep_idxs)]
         obs = env.set_init_state(curr_initial_states)
@@ -275,14 +277,20 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     wait_actions = np.array([get_libero_dummy_action(cfg.model_family)] * wait_mask.astype(int).sum())
                     actions[wait_mask] = wait_actions
 
+                # Find which envs aren't fully done and only step those.
+                not_done_with_all_eps = env_ep_idxs < cfg.num_trials_per_task
+                not_done_with_all_eps_ids = np.where(not_done_with_all_eps)[0]
+
                 # Execute action in environment
-                obs, reward, done, info = env.step(actions)
+                obs, reward, done_, info = env.step(actions) # [not_done_with_all_eps], not_done_with_all_eps_ids)
+
+                # Since we are only stepping some envs, done_ is not of shape []
+                # done_ = np.array(done_)
+                # done[not_done_with_all_eps] = done_
+                done = np.array(done_)
 
                 # Increment step counter for 
                 env_steps += 1
-
-                not_done_with_all_eps = env_ep_idxs < cfg.num_trials_per_task
-                done = np.array(done)
 
                 # Increment success counter for all envs that are done AND haven't finished all their episodes yet
                 task_successes += done.astype(int) * not_done_with_all_eps.astype(int)
@@ -294,8 +302,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 # Increment env_ep_idxs, then recompute not_done_with_all_eps
                 # (Important because this is used for reset_mask. If an env finishes its final episode, it 
                 # should not be reset!)
-                env_ep_idxs += ((time_limit_reached | done) & not_done_with_all_eps).astype(int)
-                total_episodes += np.sum(((time_limit_reached | done) & not_done_with_all_eps).astype(int))
+                if np.any(((time_limit_reached | done) & not_done_with_all_eps)):
+                    # print(f"env_ep_idxs before {env_ep_idxs}")
+                    # print(f"plus {((time_limit_reached | done) & not_done_with_all_eps).astype(int)}")
+                    env_ep_idxs += ((time_limit_reached | done) & not_done_with_all_eps).astype(int)
+                    # print(f"env_ep_idxs after {env_ep_idxs}")
+                    total_episodes += np.sum(((time_limit_reached | done) & not_done_with_all_eps).astype(int))
                 # print(time_limit_reached)
                 # print(done)
                 # print(not_done_with_all_eps)
@@ -304,16 +316,19 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 # Resets occur if done is true for an env (in which case the task successes also go up)
                 # OR because the time limit is reached, but not if that env is done with all episodes
                 reset_mask = (time_limit_reached | done) & not_done_with_all_eps
-                # print(time_limit_reached)
-                # print(done)
-                # print(not_done_with_all_eps)
+
+                # if np.any(done):
+                #     print(done)
+                #     print(time_limit_reached)
+                #     print(not_done_with_all_eps)
+                #     print(reset_mask)
+
                 if np.any(reset_mask):
                     reset_ids = np.where(reset_mask)[0]
                     print(f"Resetting envs: {reset_ids}")
                     env.reset(reset_ids)
-
-                    # Increment the episode count of all envs that are done
-                    env_ep_idxs += reset_mask.astype(int)
+                    for id in reset_ids:
+                        env.workers[id].seed(0)
 
                     # For all reset envs, set their initial state to the new episode's initial state
                     curr_initial_states = []
@@ -344,6 +359,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     # Log current results
                     # print(f"Success: {done}")
                     print(f"Task successes {task_successes}")
+                    print(f"Task counts    {env_ep_idxs}")
                     print(f"# episodes completed so far: {total_episodes}")
                     print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
                     # log_file.write(f"Success: {done}\n")
@@ -363,12 +379,15 @@ def eval_libero(cfg: GenerateConfig) -> None:
             #     break
 
         print(f"Task successes {task_successes}")
+        print(f"Task counts {env_ep_idxs}")
         print(f"# episodes completed so far: {total_episodes}")
         print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
         # log_file.write(f"Success: {done}\n")
         log_file.write(f"# episodes completed so far: {total_episodes}\n")
         log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
         log_file.flush()
+
+        env.close()
 
     # Save local log file
     log_file.close()
