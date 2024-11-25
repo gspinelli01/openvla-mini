@@ -202,93 +202,173 @@ def eval_libero(cfg: GenerateConfig) -> None:
             print(task_id, task.language)
         env = SubprocVectorEnv(env_generator_chunk)
 
-        for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
-            env.reset()
-            curr_initial_states = [initial_states[episode_idx] for initial_states in initial_states_chunk]
-            obs = env.set_init_state(curr_initial_states)
+        env_ep_idxs = np.zeros([cfg.num_envs], dtype=int)          # Count which episode the env is on
+        env_steps = np.zeros([cfg.num_envs], dtype=int)            # Count how many steps have been done in that episode
+        task_successes = np.zeros([cfg.num_envs], dtype=int)       # Count how many successes for each task
 
-            print(f"Starting episode {episode_idx+1}...")
-            log_file.write(f"Starting episode {episode_idx+1}...\n")
-            
-            t = 0
-            while t < max_steps + cfg.num_steps_wait:
-                try:
-                    # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
-                    # and we need to wait for them to fall
-                    if t < cfg.num_steps_wait:
-                        obs, reward, done, info = env.step(
-                            np.array([get_libero_dummy_action(cfg.model_family)] * cfg.num_envs)
+        env.reset()
+        curr_initial_states = [initial_states[episode_idx] for initial_states, episode_idx in zip(initial_states_chunk, 
+                                                                                                  env_ep_idxs)]
+        obs = env.set_init_state(curr_initial_states)
+
+        # for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
+        for t in tqdm.tqdm(range(cfg.num_trials_per_task * (max_steps + cfg.num_steps_wait))):
+            # try:
+            if True:
+                # Prepare observations dict for all images and states in obs
+                # Note: OpenVLA does not take proprio state as input
+                observations = {
+                    "full_images": [],
+                    "states": []
+                }
+                for one_obs in obs:
+                    img = get_libero_image(one_obs, resize_size)
+                    observations["full_images"].append(img)
+                    observations["states"].append(np.concatenate(
+                        (
+                            one_obs["robot0_eef_pos"], 
+                            quat2axisangle(one_obs["robot0_eef_quat"]), 
+                            one_obs["robot0_gripper_qpos"]
                         )
-                        t += 1
-                        continue
+                    ))
 
-                    # Prepare observations dict for all images and states in obs
-                    # Note: OpenVLA does not take proprio state as input
-                    observations = {
-                        "full_images": [],
-                        "states": []
-                    }
-                    for one_obs in obs:
-                        img = get_libero_image(one_obs, resize_size)
-                        observations["full_images"].append(img)
-                        observations["states"].append(np.concatenate(
-                            (
-                                one_obs["robot0_eef_pos"], 
-                                quat2axisangle(one_obs["robot0_eef_quat"]), 
-                                one_obs["robot0_gripper_qpos"]
-                            )
-                        ))
+                # Save preprocessed image for replay video
+                # TODO: Implement replay
+                # replay_images.append(img)
 
-                    # Save preprocessed image for replay video
-                    # TODO: Implement replay
-                    # replay_images.append(img)
+                # TODO: Implement obs history
+                # if cfg.obs_history > 1:
+                #     raise NotImplementedError
 
-                    if cfg.obs_history > 1:
-                        # TODO: Implement obs history
+                # Query model to get action
+                images = []
+                for image in observations["full_images"]:
+                    image = Image.fromarray(image)
+                    image = image.convert("RGB")
+
+                    # (If trained with image augmentations) Center crop image and then resize back up to original size.
+                    # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), we must multiply
+                    #            the original height and width by sqrt(0.9) -- not 0.9!
+                    if cfg.center_crop:
                         raise NotImplementedError
-
-                    # Query model to get action
-                    # TODO: Package image processing into its own util function
-                    images = []
-                    for image in observations["full_images"]:
-                        image = Image.fromarray(obs["full_image"])
-                        image = image.convert("RGB")
-
-                        # (If trained with image augmentations) Center crop image and then resize back up to original size.
-                        # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), we must multiply
-                        #            the original height and width by sqrt(0.9) -- not 0.9!
-                        if cfg.center_crop:
-                            raise NotImplementedError
-                        
-                        images.append(image)
                     
-                    actions = model.batch_predict_action(
-                        images, instruction_chunk, unnorm_key=cfg.unnorm_key
-                    )
+                    images.append(image)
+                
+                actions = model.batch_predict_action(
+                    images, instruction_chunk, unnorm_key=cfg.unnorm_key
+                )
+                
+
+                # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
+                actions = normalize_gripper_action(actions, binarize=True)
+
+                # [OpenVLA] The dataloader flips the sign of the gripper action to align with other datasets
+                # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
+                if cfg.model_family in ["openvla", "prismatic"]:
+                    actions = invert_gripper_action(actions)
+
+                # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
+                # and we need to wait for them to fall
+                # Get all envs with timestep < the wait time and convert their action to noop
+                wait_mask = env_steps < cfg.num_steps_wait
+                if np.any(wait_mask):
+                    wait_actions = np.array([get_libero_dummy_action(cfg.model_family)] * wait_mask.astype(int).sum())
+                    actions[wait_mask] = wait_actions
+
+                # Execute action in environment
+                obs, reward, done, info = env.step(actions)
+
+                # Increment step counter for 
+                env_steps += 1
+
+                not_done_with_all_eps = env_ep_idxs < cfg.num_trials_per_task
+                done = np.array(done)
+
+                # Increment success counter for all envs that are done AND haven't finished all their episodes yet
+                task_successes += done.astype(int) * not_done_with_all_eps.astype(int)
+                total_successes += np.sum(done.astype(int) * not_done_with_all_eps.astype(int))
+
+                # Reset those that hit time limit
+                time_limit_reached = env_steps >= (max_steps + cfg.num_steps_wait)
+                
+                # Increment env_ep_idxs, then recompute not_done_with_all_eps
+                # (Important because this is used for reset_mask. If an env finishes its final episode, it 
+                # should not be reset!)
+                env_ep_idxs += ((time_limit_reached | done) & not_done_with_all_eps).astype(int)
+                total_episodes += np.sum(((time_limit_reached | done) & not_done_with_all_eps).astype(int))
+                # print(time_limit_reached)
+                # print(done)
+                # print(not_done_with_all_eps)
+                not_done_with_all_eps = env_ep_idxs < cfg.num_trials_per_task
+
+                # Resets occur if done is true for an env (in which case the task successes also go up)
+                # OR because the time limit is reached, but not if that env is done with all episodes
+                reset_mask = (time_limit_reached | done) & not_done_with_all_eps
+                # print(time_limit_reached)
+                # print(done)
+                # print(not_done_with_all_eps)
+                if np.any(reset_mask):
+                    reset_ids = np.where(reset_mask)[0]
+                    print(f"Resetting envs: {reset_ids}")
+                    env.reset(reset_ids)
+
+                    # Increment the episode count of all envs that are done
+                    env_ep_idxs += reset_mask.astype(int)
+
+                    # For all reset envs, set their initial state to the new episode's initial state
+                    curr_initial_states = []
+                    for episode_idx, initial_states, reset in zip(env_ep_idxs, initial_states_chunk, reset_mask):
+                        if reset:
+                            curr_initial_states.append(initial_states[episode_idx])
+                    
+                    reset_obs_list = env.set_init_state(curr_initial_states, reset_ids)
+
+                    for reset_obs, reset_id in zip(reset_obs_list, reset_ids):
+                        obs[reset_id] = reset_obs
+
+                    env_steps[reset_mask] = 0
+
+                    # TODO: Save a replay video of the episode
+                    # save_rollout_video(
+                    #     replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
+                    # )
+
+                    # Save the videos to wandb
+                    # if cfg.use_wandb and (task_successes < 10 or task_episodes - task_successes < 10):
+                    #     group = "success" if done else "failure"
+                    #     idx = task_successes if done else task_episodes - task_successes
+                    #     wandb.log(
+                    #         {f"{task_description}/{group}/{idx}": wandb.Video(np.array(replay_images).transpose(0, 3, 1, 2))}
+                    #     )
+
+                    # Log current results
+                    # print(f"Success: {done}")
+                    print(f"Task successes {task_successes}")
+                    print(f"# episodes completed so far: {total_episodes}")
+                    print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+                    # log_file.write(f"Success: {done}\n")
+                    log_file.write(f"# episodes completed so far: {total_episodes}\n")
+                    log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
+                    log_file.flush()
+
                     
 
-                    # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
-                    actions = normalize_gripper_action(actions, binarize=True)
-
-                    # [OpenVLA] The dataloader flips the sign of the gripper action to align with other datasets
-                    # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
-                    if cfg.model_family in ["openvla", "prismatic"]:
-                        actiosn = invert_gripper_action(actions)
-
-                    # Execute action in environment
-                    obs, reward, done, info = env.step(actions)
-                    if done:
-                        task_successes += 1
-                        total_successes += 1
-                        break
-                    t += 1
-
-                except Exception as e:
-                    print(f"Caught exception: {e}")
-                    log_file.write(f"Caught exception: {e}\n")
+                # If all envs are done with the max number of eps, break
+                if np.all(env_ep_idxs >= cfg.num_trials_per_task):
                     break
-        
-        
+
+            # except Exception as e:
+            #     print(f"Caught exception: {e}")
+            #     log_file.write(f"Caught exception: {e}\n")
+            #     break
+
+        print(f"Task successes {task_successes}")
+        print(f"# episodes completed so far: {total_episodes}")
+        print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+        # log_file.write(f"Success: {done}\n")
+        log_file.write(f"# episodes completed so far: {total_episodes}\n")
+        log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
+        log_file.flush()
 
     # Save local log file
     log_file.close()
