@@ -400,9 +400,12 @@ class PrismaticVLM(VLM):
         # Run Visual Feature Extraction
         with torch.set_grad_enabled(self.vision_backbone_requires_grad):
             if isinstance(pixel_values, dict):
-                patch_features = self.vision_backbone({k: pixel_values[k][multimodal_indices] for k in pixel_values})
+                # patch_features = self.vision_backbone({k: pixel_values[k][multimodal_indices] for k in pixel_values})
+                # TODO: Batching the vision outputs yields incorrect results
+                patch_features = torch.cat([self.vision_backbone({k: pixel_values[k][i:i+1] for k in pixel_values}) for i in multimodal_indices])
             else:
-                patch_features = self.vision_backbone(pixel_values[multimodal_indices])
+                raise NotImplementedError
+                # patch_features = self.vision_backbone(pixel_values[multimodal_indices])
 
         # Projection Logic :: [bsz, num_patches, llm_embed_dim] =>> num_patches = (2 *) (256 + 1) for ViT-L + CLS
         projected_patch_embeddings = self.projector(patch_features)
