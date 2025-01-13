@@ -33,6 +33,7 @@ import wandb
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
 from experiments.robot.libero.libero_utils import (
+    get_expanded_libero_env,
     get_libero_dummy_action,
     get_libero_env,
     get_libero_image,
@@ -88,6 +89,10 @@ class GenerateConfig:
     wandb_entity: Optional[str] = None          # Name of entity to log under
 
     seed: int = 7                                    # Random Seed (for reproducibility)
+
+    expand_init_state_dist: bool = False             # Whether to expand the initial states for objects of interest
+    expansion_half_len_factor: float = 0.2           # Factor by which to expand half lengths of initial state regions
+    ood_only: bool = False                           # Whether to only sample states in the expanded part
 
     # fmt: on
 
@@ -158,7 +163,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
         initial_states = task_suite.get_task_init_states(task_id)
 
         # Initialize LIBERO environment and task description
-        env, task_description = get_libero_env(task, cfg.model_family, resolution=resize_size)
+        if cfg.expand_init_state_dist:
+            print("Expansion Half Len Factor:", cfg.expansion_half_len_factor)
+            print("OOD Only?", cfg.ood_only)
+            env, task_description = get_expanded_libero_env(
+                task,
+                expansion_half_len_factor=cfg.expansion_half_len_factor,
+                resolution=resize_size,
+                ood_only=cfg.ood_only,
+            )
+        else:
+            env, task_description = get_libero_env(task, cfg.model_family, resolution=resize_size)
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -170,7 +185,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
             env.reset()
 
             # Set initial states
-            obs = env.set_init_state(initial_states[episode_idx])
+            if not cfg.expand_init_state_dist:
+                obs = env.set_init_state(initial_states[episode_idx])
 
             # Setup
             t = 0
