@@ -135,7 +135,7 @@ def get_expanded_libero_env(task, expansion_half_len_factor, ood_only, resolutio
     mu_expanded_cls.__name__ = mu_cls_name + "Expanded"
 
     scene_dict = get_scene_dict()
-    scene_type = next([key for (key, value) in scene_dict.items() if mu_cls in value])
+    scene_type = [key for (key, value) in scene_dict.items() if mu_cls in value][0]  # noqa
 
     register_mu(scene_type=scene_type)(mu_expanded_cls)
     print("Registered", mu_expanded_cls.__name__)
