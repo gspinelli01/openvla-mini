@@ -21,6 +21,7 @@ class SigLIPViTBackbone(TimmViTBackbone):
         image_resize_strategy: str,
         default_image_size: int = 224,
         image_sequence_len: int = 1,
+        pretrained: bool = True,
     ) -> None:
         super().__init__(
             vision_backbone_id,
@@ -28,4 +29,5 @@ class SigLIPViTBackbone(TimmViTBackbone):
             image_resize_strategy,
             default_image_size=default_image_size,
             image_sequence_len=image_sequence_len,
+            pretrained=pretrained,
         )

@@ -13,7 +13,7 @@ from typing import List, Optional, Union
 from huggingface_hub import HfFileSystem, hf_hub_download
 
 from prismatic.conf import ModelConfig
-from prismatic.models.materialize import get_llm_backbone_and_tokenizer, get_vision_backbone_and_transform
+from prismatic.models.materialize import get_llm_backbone_and_tokenizer, get_vision_backbone_and_transform, get_vlm
 from prismatic.models.registry import GLOBAL_REGISTRY, MODEL_REGISTRY
 from prismatic.models.vlas import OpenVLA
 from prismatic.models.vlms import PrismaticVLM
@@ -47,6 +47,46 @@ def get_model_description(model_id_or_name: str) -> str:
 
     return description
 
+def load_base(
+    model_id: str,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[Union[str, Path]] = None,
+    load_for_training: bool = False,
+    image_sequence_len: Optional[int] = None,
+) -> PrismaticVLM:
+
+    model_cfg = ModelConfig.get_choice_class(model_id)
+
+    if image_sequence_len is None:
+        if hasattr(model_cfg, "image_sequence_len"):
+            image_sequence_len = model_cfg.image_sequence_len
+        else:
+            image_sequence_len = 1
+
+    # Load Vision Backbone --> on CPU, in Full Precision (initializing model, image_transform via TIMM)
+    overwatch.info(f"Loading Vision Backbone [bold]{model_cfg.vision_backbone_id}[/] via TIMM ")
+    vision_backbone, image_transform = get_vision_backbone_and_transform(
+        model_cfg.vision_backbone_id, image_resize_strategy=model_cfg.image_resize_strategy,
+        image_sequence_len=image_sequence_len
+    )
+
+    # Load LLM Backbone --> on CPU, in Full Precision (initializing Tokenizer + handling special tokens if necessary)
+    overwatch.info(f"Loading Pretrained LLM [bold]{model_cfg.llm_backbone_id}[/] via HF Transformers")
+    llm_backbone, tokenizer = get_llm_backbone_and_tokenizer(
+        model_cfg.llm_backbone_id, llm_max_length=model_cfg.llm_max_length, hf_token=hf_token
+    )
+
+    # Create VLM => wraps `vision_backbone` and `llm`
+    overwatch.info(f"Instantiating PrismaticVLM `{model_id}``")
+    vlm = get_vlm(
+        model_id,
+        model_cfg.arch_specifier,
+        vision_backbone,
+        llm_backbone,
+        enable_mixed_precision_training=model_cfg.enable_mixed_precision_training,
+    )
+
+    return vlm
 
 # === Load Pretrained Model ===
 def load(
@@ -64,9 +104,11 @@ def load(
         config_json, checkpoint_pt = run_dir / "config.json", run_dir / "checkpoints" / "latest-checkpoint.pt"
         assert config_json.exists(), f"Missing `config.json` for `{run_dir = }`"
         assert checkpoint_pt.exists(), f"Missing checkpoint for `{run_dir = }`"
+    elif model_id_or_path not in GLOBAL_REGISTRY:
+        overwatch.info(f"Couldn't find `{model_id_or_path = }; Attempting to load base VLM.")
+        return load_base(model_id_or_path)
     else:
-        if model_id_or_path not in GLOBAL_REGISTRY:
-            raise ValueError(f"Couldn't find `{model_id_or_path = }; check `prismatic.available_model_names()`")
+            # raise ValueError(f"Couldn't find `{model_id_or_path = }; check `prismatic.available_model_names()`")
 
         overwatch.info(f"Downloading `{(model_id := GLOBAL_REGISTRY[model_id_or_path]['model_id'])} from HF Hub")
         with overwatch.local_zero_first():

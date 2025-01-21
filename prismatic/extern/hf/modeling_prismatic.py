@@ -12,9 +12,11 @@ References [LLaVa, IDEFICS-2]:
     => https://github.com/huggingface/transformers/blob/main/src/transformers/models/idefics2/modeling_idefics2.py
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -23,6 +25,7 @@ import tokenizers
 import torch
 import torch.nn as nn
 import transformers
+from transformers import PreTrainedTokenizerBase
 from timm.models.vision_transformer import LayerScale
 from transformers import AutoModelForCausalLM, PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
@@ -171,6 +174,94 @@ class PrismaticCausalLMOutputWithPast(ModelOutput):
 
     # Additions for VLMs
     projector_features: Optional[torch.FloatTensor] = None
+
+
+
+class VQActionTokenizer:
+    """Loads a torch model (VqVaE) that turns"""
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        vq_vae_path: str,
+        device="cpu",
+        use_extra: bool = False,
+    ):
+        self.tokenizer = tokenizer
+        self.device = device
+
+        ### VQ VAE loading ###
+
+        # NOTE: if this errors, you need to install vqvae, source: https://github.com/jayLEE0301/vq_bet_official
+        from vqvae.vqvae import VqVae
+
+        self.vq_path = Path(vq_vae_path)
+        assert self.vq_path.exists(), f"Missing VQ VAE path: {self.vq_path}"
+        vq_model_path = self.vq_path / "checkpoints" / "model.pt"
+        vq_config_path = self.vq_path / "config.json"
+        assert vq_model_path.exists(), f"Missing VQ checkpoint path: {vq_model_path}"
+        assert vq_config_path.exists(), f"Missing VQ config path: {vq_config_path}"
+        with open(vq_config_path, "r") as f:
+            vq_config = dict(json.load(f))
+        # set the load checkpoint
+        vq_config["load_dir"] = vq_model_path
+        vq_config["eval"] = True
+        vq_config["device"] = self.device
+
+        # instantiate the vqvae and load
+        self.vq_vae = VqVae(**vq_config)
+
+        ### TOKENIZATION arguments ###
+        # number of bins to assign for each "action" dimension
+        self.n_bins = self.vq_vae.vqvae_n_embed
+
+        self.tokenizer_len = self.tokenizer.vocab_size
+        if isinstance(tokenizer, Qwen2TokenizerFast) and use_extra:
+            self.tokenizer_len = len(self.tokenizer)
+        elif use_extra:
+            raise NotImplementedError("Cannot use extra tokens for this tokenizer!")
+
+        # [Contract] Set "action_token_begin_idx" based on `self.tokenizer.vocab_size - (self.n_bins + 1)`
+        #   =>> Assumes we're always overwriting the final `n_bins` tokens of the vocabulary!
+        self.action_token_begin_idx: int = int(self.tokenizer_len - (self.n_bins + 1))
+        self.action_token_end_idx: int = int(self.tokenizer_len)
+
+    def __call__(self, action: np.ndarray) -> Union[str, List[str]]:
+        # make sure shape matches (1 x T x A)
+        action = torch.from_numpy(action).to(self.device).reshape((1, self.vq_vae.input_dim_h, self.vq_vae.input_dim_w))
+        # action is (1 x T x A), codes will be (1 x GROUPS) each between 0 and BINS-1
+        _, vq_code = self.vq_vae.get_code(action)
+        assert torch.all(vq_code >= 0) and torch.all(vq_code < self.n_bins)
+
+        # vq_codes will be between [0, n_bins-1], so we subtract them from vocab_size - 1
+        # for example, code 0 maps to vocab_size - 1
+        return self.tokenizer.decode(list(self.tokenizer_len - 1 - vq_code[0].numpy()))
+
+    def decode_token_ids_to_actions(self, action_token_ids: np.ndarray) -> np.ndarray:
+        # first convert from tokens to bins (inverse of what happens in __call__)
+        action_token_ids = self.tokenizer_len - 1 - action_token_ids
+        initial_shape = action_token_ids.shape
+        # these directly correspond to the bins
+        action_token_ids = np.clip(action_token_ids, 0, self.n_bins - 1)
+        action_token_ids = torch.from_numpy(action_token_ids).to(self.device).reshape(-1, self.vq_vae.vqvae_groups)
+        assert torch.all(action_token_ids >= 0) and torch.all(action_token_ids < self.n_bins)
+        # (1 x G) --> (1 x Z_DIM)
+        latent = self.vq_vae.draw_code_forward(action_token_ids)
+        # --> (1 x A) --> (A,)
+        ret_action = self.vq_vae.get_action_from_latent(latent)
+
+        # reshape to be a flat array if the input was a single action
+        if action_token_ids.shape[0] == 1 and len(initial_shape) == 1:
+            return ret_action[0, 0]
+
+        # get the first horizon element of the returned actions (VQ might return an action horizon)
+        # TODO parameterize this
+        return ret_action[:, 0]
+
+    @property
+    def required_future_horizon(self) -> int:
+        # the number of future action horizon elements
+        return self.vq_vae.input_dim_h - 1
 
 
 class PrismaticPreTrainedModel(PreTrainedModel):
@@ -492,36 +583,49 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
 class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
     config_class: PretrainedConfig = OpenVLAConfig
 
-    def __init__(self, config: OpenVLAConfig) -> None:
+    def __init__(self, config: OpenVLAConfig, tokenizer: Optional[PreTrainedTokenizerBase] = None) -> None:
         super().__init__(config)
         self.norm_stats = config.norm_stats
+        self.tokenizer = tokenizer
 
-        # Compute action bins
-        self.bins = np.linspace(-1, 1, config.n_action_bins)
-        self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2.0
+        if config.vq:
+            # NOTE: make sure this is installed from VQ BeT!
+            assert self.tokenizer is not None, "Must pass in tokenizer for VQ BeT action tokenizer!"
+            self.vq_vae = VQActionTokenizer(self.tokenizer, "vq/model.pt", use_extra=config.use_extra)
+        else:
 
-        # Compute vocab size for de-tokenization -- revert added "multiple of"
-        self.vocab_size = self.config.text_config.vocab_size - self.config.pad_to_multiple_of
+            # Compute action bins
+            self.bins = np.linspace(-1, 1, config.n_action_bins)
+            self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2.0
+
+            # Compute vocab size for de-tokenization -- revert added "multiple of"
+            self.vocab_size = self.config.text_config.vocab_size - self.config.pad_to_multiple_of
 
     def predict_action(
         self, input_ids: Optional[torch.LongTensor] = None, unnorm_key: Optional[str] = None, **kwargs: str
     ) -> np.ndarray:
         """Thin wrapper around .generate() that decodes predicted actions and unnormalizes them."""
-        # If the special empty token ('') does not already appear after the colon (':') token in the prompt
-        # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
-        if not torch.all(input_ids[:, -1] == 29871):
-            input_ids = torch.cat(
-                (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
-            )
+        
+        if "qwen" not in self.config.llm_backbone_id:
+            # If the special empty token ('') does not already appear after the colon (':') token in the prompt
+            # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
+            if not torch.all(input_ids[:, -1] == 29871):
+                input_ids = torch.cat(
+                    (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
+                )
 
         # Run VLA inference
         generated_ids = self.generate(input_ids, max_new_tokens=self.get_action_dim(unnorm_key), **kwargs)
 
-        # Extract predicted action tokens and translate into (normalized) continuous actions
-        predicted_action_token_ids = generated_ids[0, -self.get_action_dim(unnorm_key) :].cpu().numpy()
-        discretized_actions = self.vocab_size - predicted_action_token_ids
-        discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
-        normalized_actions = self.bin_centers[discretized_actions]
+        if self.config.vq:
+            # TODO
+            pass
+        else:
+            # Extract predicted action tokens and translate into (normalized) continuous actions
+            predicted_action_token_ids = generated_ids[0, -self.get_action_dim(unnorm_key) :].cpu().numpy()
+            discretized_actions = self.vocab_size - predicted_action_token_ids
+            discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
+            normalized_actions = self.bin_centers[discretized_actions]
 
         # Unnormalize actions
         action_norm_stats = self.get_action_stats(unnorm_key)

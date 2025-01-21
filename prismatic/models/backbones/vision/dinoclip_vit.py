@@ -49,6 +49,7 @@ class DinoCLIPViTBackbone(VisionBackbone):
         image_resize_strategy: str,
         default_image_size: int = 224,
         image_sequence_len: int = 1,
+        pretrained: bool = True,
     ) -> None:
         super().__init__(
             vision_backbone_id,
@@ -61,12 +62,12 @@ class DinoCLIPViTBackbone(VisionBackbone):
 
         # Initialize both Featurizers (ViTs) by downloading from HF / TIMM Hub if necessary
         self.dino_featurizer: VisionTransformer = timm.create_model(
-            self.dino_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+            self.dino_timm_path_or_url, pretrained=pretrained, num_classes=0, img_size=self.default_image_size
         )
         self.dino_featurizer.eval()
 
         self.clip_featurizer: VisionTransformer = timm.create_model(
-            self.clip_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+            self.clip_timm_path_or_url, pretrained=pretrained, num_classes=0, img_size=self.default_image_size
         )
         self.clip_featurizer.eval()
 

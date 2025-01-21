@@ -192,6 +192,7 @@ class PrismaticProcessor(ProcessorMixin):
         truncation: Optional[Union[bool, str, TruncationStrategy]] = None,
         max_length: Optional[int] = None,
         return_tensors: Optional[Union[str, TensorType]] = TensorType.PYTORCH,
+        allow_multiple_images: bool = False,
     ) -> BatchFeature:
         """
         Preprocess a given (batch) of text/images for a Prismatic VLM; forwards text to the underlying LLM's tokenizer,
@@ -202,15 +203,16 @@ class PrismaticProcessor(ProcessorMixin):
         @param truncation: Truncation strategy for the output sequences; requires `max_length` to be specified
         @param max_length: Maximum length (in tokens) to truncate
         @param return_tensors: Type of return tensors (usually "pt" or TensorType.PYTORCH)
+        @param allow_multiple_images: Allows mismatch between len(images and len(text))
         @return: BatchFeature with keys for `input_ids`, `attention_mask` and `pixel_values`.
-        """
+        """            
         pixel_values = self.image_processor(images, return_tensors=return_tensors)["pixel_values"]
         text_inputs = self.tokenizer(
             text, return_tensors=return_tensors, padding=padding, truncation=truncation, max_length=max_length
         )
 
         # [Validate] Need same number of images and text inputs!
-        if pixel_values.shape[0] != text_inputs.input_ids.shape[0]:
+        if not allow_multiple_images and pixel_values.shape[0] != text_inputs.input_ids.shape[0]:
             raise ValueError("Batch is malformed; expected same number of images and text inputs!")
 
         return BatchFeature(data={**text_inputs, "pixel_values": pixel_values})

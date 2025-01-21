@@ -503,6 +503,13 @@ class Prism_7B_DINOSigLIP_224px(Exp_7B_One_Stage):
     finetune_epochs: int = 2
 
 
+@dataclass
+class Prism_7B_DINOSigLIP_224px_Scratch(Prism_7B_DINOSigLIP_224px):
+    model_id: str = "prism-dinosiglip-scratch-224px+7b"
+    vision_backbone_id: str = "dinosiglip-vit-so-224px-scratch"
+    llm_backbone_id: str = "llama2-7b-scratch-pure"
+
+
 #   =>> Note :: Run with `--dataset.type "llava-lvis4v-lrv"`
 @dataclass
 class Prism_Qwen25_0_5B_DINOSigLIP_224px(Exp_7B_One_Stage):
@@ -599,6 +606,8 @@ class ModelRegistry(Enum):
     OPT_DINOSIGLIP_224PX_RESIZE_NAIVE = Opt_7B_DINOSigLIP_ViT_SO_p14_224px_Resize_Naive
     PRISM_DINOSIGLIP_224PX_CONTROLLED_7B = Prism_7B_DINOSigLIP_224px_Controlled
     PRISM_DINOSIGLIP_224PX_7B = Prism_7B_DINOSigLIP_224px
+
+    PRISM_DINOSIGLIP_224PX_SCRATCH_7B = Prism_7B_DINOSigLIP_224px_Scratch
 
     # Qwen
     PRISM_QWEN25_DINOSIGLIP_224PX_0_5B = Prism_Qwen25_0_5B_DINOSigLIP_224px

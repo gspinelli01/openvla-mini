@@ -23,6 +23,7 @@ class CLIPViTBackbone(TimmViTBackbone):
         image_resize_strategy: str,
         default_image_size: int = 224,
         image_sequence_len: int = 1,
+        pretrained: bool = True,
     ) -> None:
         super().__init__(
             vision_backbone_id,
@@ -31,4 +32,5 @@ class CLIPViTBackbone(TimmViTBackbone):
             default_image_size=default_image_size,
             image_sequence_len=image_sequence_len,
             override_act_layer="quick_gelu" if CLIP_VISION_BACKBONES[vision_backbone_id].endswith(".openai") else None,
+            pretrained=pretrained,
         )

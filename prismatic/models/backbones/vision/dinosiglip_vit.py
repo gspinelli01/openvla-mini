@@ -23,9 +23,18 @@ from prismatic.models.backbones.vision.base_vision import (
     unpack_tuple,
 )
 
+from prismatic.overwatch import initialize_overwatch
+
+overwatch = initialize_overwatch(__name__)
+
+
 # Registry =>> Supported DinoSigLIP Pairs (as TIMM identifiers)
 DINOSigLIP_VISION_BACKBONES = {
     "dinosiglip-vit-so-224px": {
+        "dino": "vit_large_patch14_reg4_dinov2.lvd142m",
+        "siglip": "vit_so400m_patch14_siglip_224",
+    },
+    "dinosiglip-vit-so-224px-scratch": {
         "dino": "vit_large_patch14_reg4_dinov2.lvd142m",
         "siglip": "vit_so400m_patch14_siglip_224",
     },
@@ -53,6 +62,7 @@ class DinoSigLIPViTBackbone(VisionBackbone):
         image_resize_strategy: str,
         default_image_size: int = 224,
         image_sequence_len: int = 1,
+        pretrained: bool = True,
     ) -> None:
         super().__init__(
             vision_backbone_id,
@@ -63,14 +73,17 @@ class DinoSigLIPViTBackbone(VisionBackbone):
         self.dino_timm_path_or_url = DINOSigLIP_VISION_BACKBONES[vision_backbone_id]["dino"]
         self.siglip_timm_path_or_url = DINOSigLIP_VISION_BACKBONES[vision_backbone_id]["siglip"]
 
+        if not pretrained:
+            overwatch.info("Loading VisionTransformer from scratch!")
+
         # Initialize both Featurizers (ViTs) by downloading from HF / TIMM Hub if necessary
         self.dino_featurizer: VisionTransformer = timm.create_model(
-            self.dino_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+            self.dino_timm_path_or_url, pretrained=pretrained, num_classes=0, img_size=self.default_image_size
         )
         self.dino_featurizer.eval()
 
         self.siglip_featurizer: VisionTransformer = timm.create_model(
-            self.siglip_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+            self.siglip_timm_path_or_url, pretrained=pretrained, num_classes=0, img_size=self.default_image_size
         )
         self.siglip_featurizer.eval()
 

@@ -118,6 +118,15 @@ class Exp_DinoSigLIP_224px_Bridge(Exp_SigLIP_224px_Bridge):
     data_mix: str = "bridge"
 
 
+# = [8 GPU] Fast Iteration =>> DINO-SigLIP 224px + Bridge =
+@dataclass
+class Exp_DinoSigLIP_224px_Bridge_Scratch(Exp_SigLIP_224px_Bridge):
+    vla_id: str = "prism-dinosiglip-scratch-224px+mx-bridge"
+    base_vlm: Union[str, Path] = "prism-dinosiglip-scratch-224px+7b"
+
+    data_mix: str = "bridge"
+
+
 # = [64 GPU] SigLIP 224px + OXE Magic Soup =
 @dataclass
 class Exp_SigLIP_224px_OXE_Magic_Soup(Exp_SigLIP_224px_Bridge):
@@ -280,6 +289,8 @@ class VLARegistry(Enum):
     SIGLIP_224PX_MX_BRIDGE = Exp_SigLIP_224px_Bridge
     DINOSIGLIP_224PX_MX_BRIDGE = Exp_DinoSigLIP_224px_Bridge
     DINOSIGLIP_224PX_MX_LIBERO_90 = Exp_DinoSigLIP_224px_LIBERO_90
+
+    DINOSIGLIP_224PX_MX_BRIDGE_SCRATCH = Exp_DinoSigLIP_224px_Bridge_Scratch
 
     # SigLIP Frozen Backbone Experiment
     FREEZE_SIGLIP_224PX_MX_BRIDGE = Exp_FreezeVIT_SigLIP_224px_Bridge
