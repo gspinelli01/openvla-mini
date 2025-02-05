@@ -46,6 +46,7 @@ def generate_mu_with_distractor_objects(mu_cls, min_distractors, max_distractors
     assert max_distractors >= min_distractors
 
     large_objects = {
+        "basket",
         "basin_faucet",
         "chefmate_8_frypan",
         "desk_caddy",
@@ -66,7 +67,7 @@ def generate_mu_with_distractor_objects(mu_cls, min_distractors, max_distractors
         "wooden_tray",
         "wooden_two_layer_shelf",
     }
-    exclude_objects = large_objects.union({"cherries", "corn", "mayo", "target_zone"})
+    exclude_objects = large_objects.union({"cherries", "corn", "mayo", "salad_dressing", "target_zone"})
 
     rng = np.random.default_rng(distractor_seed)
     all_object_categories = set(get_object_dict().keys())
@@ -156,6 +157,7 @@ def generate_mu_with_distractor_objects(mu_cls, min_distractors, max_distractors
                         )
                     )
                     self.xy_region_kwargs_list = get_xy_region_kwargs_list_from_regions_info(self.regions)
+
             else:
                 super().define_regions()
 
