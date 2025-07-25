@@ -49,8 +49,18 @@ class TrainConfig:
 
     # VLAConfig (`prismatic/conf/vla.py`); override with --vla.type `VLARegistry.<VLA>.vla_id`
     vla: VLAConfig = field(
-        default_factory=VLAConfig.get_choice_class(VLARegistry.DINOSIGLIP_224PX_MX_OXE_MAGIC_SOUP_PLUS.vla_id)
+        default_factory=VLAConfig.get_choice_class(VLARegistry.Qwen25_DinoSigLIP_224px_0_5B_ROBOSUITE_LIFTREDBLOCK.vla_id)
     )
+
+    # == LIBERO_LOCAL ==
+    # vla: VLAConfig = field(
+    #     default_factory=VLAConfig.get_choice_class(VLARegistry.QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90_LOCAL.vla_id)
+    # )
+
+    # == LIBERO ==
+    # vla: VLAConfig = field(
+    #     default_factory=VLAConfig.get_choice_class(VLARegistry.QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90.vla_id)
+    # )
 
     # Directory Paths
     data_root_dir: Path = Path(                                     # Path to Open-X dataset directory
@@ -76,9 +86,13 @@ class TrainConfig:
     hf_token: Union[str, Path] = Path(".hf_token")                  # Environment variable or Path to HF Token
 
     # Tracking Parameters
-    trackers: Tuple[str, ...] = ("jsonl", "wandb")                  # Trackers to initialize (if W&B, add config!)
-    wandb_project: str = "prismatic"                                  # Name of W&B project to log to (use default!)
+    # trackers: Tuple[str, ...] = ("jsonl", "wandb")                  # Trackers to initialize (if W&B, add config!)
+    trackers: Tuple[str, ...] = ("jsonl",)
+    wandb_project: str = "default"                                  # Name of W&B project to log to (use default!)
     wandb_entity: str = None                          # Name of entity to log under
+
+    #debug
+    debug: bool = False                                             # debug
 
     def __post_init__(self) -> None:
         """Lift optimization parameters from `self.vla` for ease of use =>> validate on `expected_world_size`"""
@@ -111,6 +125,13 @@ class TrainConfig:
 
 @draccus.wrap()
 def train(cfg: TrainConfig) -> None:
+
+    if cfg.debug:
+        import debugpy
+        debugpy.listen(5678)
+        print('waiting for client to attach')
+        debugpy.wait_for_client()  # blocks execution until client is attached
+
     overwatch.info("OpenVLA Training :: Warming Up")
 
     # Note => Under `torchrun` initializing `overwatch` will automatically set up `torch.distributed`
@@ -120,7 +141,7 @@ def train(cfg: TrainConfig) -> None:
     # Configure Unique Run Name & Save Directory
     vla_id = cfg.vla.vla_id
     cfg.run_id = (
-        f"{vla_id}+n{cfg.vla.expected_world_size // 8}+b{cfg.per_device_batch_size}+x{cfg.seed}"
+        f"{vla_id}+n{cfg.vla.expected_world_size // 8}+b{cfg.per_device_batchs_size}+x{cfg.seed}"
         if cfg.run_id is None
         else cfg.run_id
     )
@@ -131,7 +152,7 @@ def train(cfg: TrainConfig) -> None:
 
     # Start =>> Build Directories and Set Randomness
     overwatch.info('"Do or do not; there is no try."', ctx_level=1)
-    hf_token = cfg.hf_token.read_text().strip() if isinstance(cfg.hf_token, Path) else os.environ[cfg.hf_token]
+    # hf_token = cfg.hf_token.read_text().strip() if isinstance(cfg.hf_token, Path) else os.environ[cfg.hf_token]
     worker_init_fn = set_global_seed(cfg.seed, get_worker_init_fn=True)
     os.makedirs(run_dir := (cfg.run_root_dir / cfg.run_id), exist_ok=True)
     os.makedirs(cfg.run_root_dir / cfg.run_id / "checkpoints", exist_ok=True)
@@ -153,14 +174,14 @@ def train(cfg: TrainConfig) -> None:
             assert int(re.search("step-(.+?)-", cfg.pretrained_checkpoint.name).group(1)) == cfg.resume_step
             assert int(re.search("epoch-(.+?)-", cfg.pretrained_checkpoint.name).group(1)) == cfg.resume_epoch
 
-        vlm = load_vla(
+        vlm = load_vla( # [IMPORTANTE] se è già stato addestrato è un VLA!!!
             cfg.pretrained_checkpoint,
             hf_token=hf_token,
             load_for_training=True,
             image_sequence_len=cfg.image_sequence_len,
         )
 
-    else:
+    else: # se non ha ricevuto addestramenti è ancora un VLM!!!
         vlm = load(
             cfg.vla.base_vlm, hf_token=hf_token, load_for_training=True, image_sequence_len=cfg.image_sequence_len
         )

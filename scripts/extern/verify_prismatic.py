@@ -9,7 +9,7 @@ import time
 import requests
 import torch
 from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
 
 # === Verification Arguments ===
 MODEL_PATH = "TRI-ML/prismatic-siglip-224px-7b"
@@ -61,14 +61,14 @@ def verify_prismatic() -> None:
     # ).to(device)
 
     # === BFLOAT16 + FLASH-ATTN MODE :: [~14GB of VRAM Passive || 18GB of VRAM Active] ===
-    print("[*] Loading in BF16 with Flash-Attention Enabled")
-    vlm = AutoModelForVision2Seq.from_pretrained(
-        MODEL_PATH,
-        attn_implementation="flash_attention_2",
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
-    ).to(device)
+    # print("[*] Loading in BF16 with Flash-Attention Enabled")
+    # vlm = AutoModelForVision2Seq.from_pretrained(
+    #     MODEL_PATH,
+    #     attn_implementation="flash_attention_2",
+    #     torch_dtype=torch.bfloat16,
+    #     low_cpu_mem_usage=True,
+    #     trust_remote_code=True,
+    # ).to(device)
 
     # === 8-BIT QUANTIZATION MODE (`pip install bitsandbytes`) :: [~9GB of VRAM Passive || 10GB of VRAM Active] ===
     # print("[*] Loading in 8-Bit Quantization Mode")
@@ -82,15 +82,15 @@ def verify_prismatic() -> None:
     # )
 
     # === 4-BIT QUANTIZATION MODE (`pip install bitsandbytes`) :: [~6GB of VRAM Passive || 7GB of VRAM Active] ===
-    # print("[*] Loading in 4-Bit Quantization Mode")
-    # vlm = AutoModelForVision2Seq.from_pretrained(
-    #     MODEL_PATH,
-    #     attn_implementation="flash_attention_2",
-    #     torch_dtype=torch.float16,
-    #     quantization_config=BitsAndBytesConfig(load_in_4bit=True),
-    #     low_cpu_mem_usage=True,
-    #     trust_remote_code=True,
-    # )
+    print("[*] Loading in 4-Bit Quantization Mode")
+    vlm = AutoModelForVision2Seq.from_pretrained(
+        MODEL_PATH,
+        attn_implementation="flash_attention_2",
+        torch_dtype=torch.float16,
+        quantization_config=BitsAndBytesConfig(load_in_4bit=True),
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,
+    )
 
     # Iterate over Sample Prompts =>> Generate
     image = Image.open(requests.get(DEFAULT_IMAGE_URL, stream=True).raw).convert("RGB")

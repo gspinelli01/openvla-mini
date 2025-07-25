@@ -317,4 +317,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
 
 if __name__ == "__main__":
+    # import debugpy
+    # debugpy.listen(5678)
+    # print('waiting for client to attach')
+    # debugpy.wait_for_client()  # blocks execution until client is attached
     eval_libero()

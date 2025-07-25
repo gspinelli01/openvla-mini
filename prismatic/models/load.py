@@ -26,6 +26,7 @@ overwatch = initialize_overwatch(__name__)
 
 # === HF Hub Repository ===
 HF_HUB_REPO = "TRI-ML/prismatic-vlms"
+# HF_HUB_REPO = "Stanford-ILIAD"
 VLA_HF_HUB_REPO = "openvla/openvla-dev"
 
 
@@ -64,12 +65,13 @@ def load(
         config_json, checkpoint_pt = run_dir / "config.json", run_dir / "checkpoints" / "latest-checkpoint.pt"
         assert config_json.exists(), f"Missing `config.json` for `{run_dir = }`"
         assert checkpoint_pt.exists(), f"Missing checkpoint for `{run_dir = }`"
-    else:
+    else: # DA EVITARE!!!! I modelli miniVLA non sono disponibili su huggingface!!!!!!
         if model_id_or_path not in GLOBAL_REGISTRY:
             raise ValueError(f"Couldn't find `{model_id_or_path = }; check `prismatic.available_model_names()`")
 
         overwatch.info(f"Downloading `{(model_id := GLOBAL_REGISTRY[model_id_or_path]['model_id'])} from HF Hub")
         with overwatch.local_zero_first():
+            # https://huggingface.co/Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b/blob/main/config.json
             config_json = hf_hub_download(repo_id=HF_HUB_REPO, filename=f"{model_id}/config.json", cache_dir=cache_dir)
             checkpoint_pt = hf_hub_download(
                 repo_id=HF_HUB_REPO, filename=f"{model_id}/checkpoints/latest-checkpoint.pt", cache_dir=cache_dir

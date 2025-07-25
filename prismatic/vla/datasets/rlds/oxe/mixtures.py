@@ -209,5 +209,10 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     "libero_90": [
         ("libero_90", 1.0),
     ],
+
+    # === ROBOSUITE LIFT RED BLOCK ===
+    "robosuite_lift_red_block": [
+        ("robosuite_lift_red_block", 1.0)
+    ]
 }
 # fmt: on

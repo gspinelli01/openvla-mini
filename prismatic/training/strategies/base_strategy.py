@@ -300,6 +300,12 @@ class TrainingStrategy(ABC):
                 with torch.autocast(
                     "cuda", dtype=self.mixed_precision_dtype, enabled=self.enable_mixed_precision_training
                 ):
+                    # == IMAGE OBS debug
+                    # import cv2
+                    # import numpy as np
+                    # cv2.imwrite('test_dino.png', np.transpose(batch['pixel_values']['dino'].numpy().squeeze()*255, (1,2,0)))
+                    # cv2.imwrite('test_dino.png', np.transpose(batch['pixel_values']['dino'].numpy().squeeze()*255, (1,2,0)))
+                    # 
                     # [Contract] self.vlm.forward() must automatically compute `loss` and return!
                     output: CausalLMOutputWithPast = self.vlm(
                         input_ids=batch["input_ids"],

@@ -258,7 +258,15 @@ if __name__ == "__main__":
         help=("Path to regenerated dataset directory. " "Example: ./LIBERO/libero/datasets/libero_spatial_no_noops"),
         required=True,
     )
+    parser.add_argument('-d', '--debug',
+                    action='store_true')
     args = parser.parse_args()
+
+    if args.debug:
+        import debugpy
+        debugpy.listen(5678)
+        print('wait for client to attach')
+        debugpy.wait_for_client()
 
     # Start data regeneration
     main(args)
