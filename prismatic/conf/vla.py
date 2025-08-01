@@ -193,6 +193,27 @@ class Exp_Qwen25_DinoSigLIP_224px_0_5B_RobosuiteLiftRedBlock(Exp_SigLIP_224px_Br
     max_steps: Optional[int] = None
     save_every_n_steps: Optional[int] = 1000
 
+@dataclass
+class Exp_Qwen25_DinoSigLIP_224px_0_5B_YbqFloorSmall(Exp_SigLIP_224px_Bridge):
+    vla_id: str = "prism-qwen25-dinosiglip-224px+0_5b+mx-ybq_floor_small"
+    base_vlm: Union[str, Path] = "prism-qwen25-extra-dinosiglip-224px+0_5b"
+
+    data_mix: str = "ybq_floor_small"  # direct dataset
+    action_tokenizer: str = "extra_action_tokenizer"
+
+    expected_world_size: int = 1
+    global_batch_size: int = 1
+    per_device_batch_size: int = 1
+
+    freeze_vision_backbone: bool = True
+    freeze_llm_backbone: bool = True
+    unfreeze_last_llm_layer: bool = True
+
+    # Optimization Parameters
+    epochs: int = 10
+    max_steps: Optional[int] = None
+    save_every_n_steps: Optional[int] = 1000
+
 
 @dataclass
 class Exp_Qwen25_DinoSigLIP_224px_0_5B_Bridge(Exp_SigLIP_224px_Bridge):
@@ -316,7 +337,10 @@ class VLARegistry(Enum):
     QWEN25_DINOSIGLIP_224PX_0_5B_MX_OXE_MAGIC_SOUP = Exp_Qwen25_DinoSigLIP_224px_0_5B_OXE_Magic_Soup
     QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90
     # QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90_LOCAL = Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90_LOCAL
+
+    # custom datasets
     Qwen25_DinoSigLIP_224px_0_5B_ROBOSUITE_LIFTREDBLOCK = Exp_Qwen25_DinoSigLIP_224px_0_5B_RobosuiteLiftRedBlock
+    Qwen25_DinoSigLIP_224px_0_5B_YBQFLOORSMALL= Exp_Qwen25_DinoSigLIP_224px_0_5B_YbqFloorSmall
 
     QWEN25_DINOSIGLIP_224PX_T2_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_T2_0_5B_LIBERO_90
     QWEN25_DINOSIGLIP_224PX_WRIST_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_LIBERO_90

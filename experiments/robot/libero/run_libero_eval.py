@@ -89,6 +89,8 @@ class GenerateConfig:
 
     seed: int = 7                                    # Random Seed (for reproducibility)
 
+    debug: bool = False
+
     # fmt: on
 
 
@@ -101,6 +103,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     # Set random seed
     set_seed_everywhere(cfg.seed)
+
+    if cfg.debug:
+        import debugpy
+        debugpy.listen(5678)
+        print('wait for client')
+        debugpy.wait_for_client()
 
     # [OpenVLA] Set action un-normalization key
     cfg.unnorm_key = cfg.task_suite_name

@@ -856,6 +856,22 @@ def robosuite_lift_red_block_dataset_transform(trajectory: Dict[str, Any]) -> Di
     # trajectory["observation"]["gripper_state"] = trajectory["observation"]["state"][:, -2:]  # 2D gripper state
     return trajectory
 
+def ybq_floor_small_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    # gripper action is in -1 (open)...1 (close) --> clip to 0...1, flip --> +1 = open, 0 = close
+    gripper_action = trajectory["action"][:, -1:]
+    gripper_action = invert_gripper_actions(tf.clip_by_value(gripper_action, 0, 1))
+
+    trajectory["action"] = tf.concat(
+        [
+            trajectory["action"][:, :6],
+            gripper_action,
+        ],
+        axis=1,
+    )
+    # trajectory["observation"]["EEF_state"] = trajectory["observation"]["state"][:, :6]
+    # trajectory["observation"]["gripper_state"] = trajectory["observation"]["state"][:, -2:]  # 2D gripper state
+    return trajectory
+
 
 # === Registry ===
 OXE_STANDARDIZATION_TRANSFORMS = {
@@ -938,4 +954,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_90": libero_dataset_transform,
     ### ROBOSUITE datasets (collezionati)
     "robosuite_lift_red_block": robosuite_lift_red_block_dataset_transform,
+    ### custom datasets
+    "ybq_floor_small": ybq_floor_small_dataset_transform,
 }

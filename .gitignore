@@ -155,3 +155,6 @@ wandb/
 # runs directory
 runs/
 
+
+filtered_trajectories_gripper_corr/*
+experiments/logs/*

@@ -39,6 +39,8 @@ from experiments.robot.libero.libero_utils import (
     get_libero_env,
 )
 
+import imageio
+
 IMAGE_RESOLUTION = 256
 
 
@@ -65,6 +67,13 @@ def is_noop(action, prev_action=None, threshold=1e-4):
     gripper_action = action[-1]
     prev_gripper_action = prev_action[-1]
     return np.linalg.norm(action[:-1]) < threshold and gripper_action == prev_gripper_action
+
+def is_waiting_for_gripper(action, prev_action, gripper_is_started):
+
+    if gripper_is_started and action[-1] == prev_action[-1]:
+        # gripper_count+=1
+        return True
+    return False
 
 
 def main(args):
@@ -150,6 +159,10 @@ def main(args):
             orig_actions = demo_data["actions"][()]
             orig_states = demo_data["states"][()]
 
+            # import pandas as pd
+            # with open('actions.html', 'w') as f:
+            #      pd.DataFrame(orig_actions).to_html(f)
+
             # Reset environment, set initial state, and wait a few steps for environment to settle
             env.reset()
             env.set_init_state(orig_states[0])
@@ -166,30 +179,32 @@ def main(args):
             agentview_images = []
             eye_in_hand_images = []
 
+            start_gripper = False
+
             # Replay original demo actions in environment and record observations
             for _, action in enumerate(orig_actions):
-                wait_for_gripper = False
+                
                 # Skip transitions with no-op actions
                 prev_action = actions[-1] if len(actions) > 0 else None
 
-                if action[-1] == 1.0 and prev_action[-1] == -1.0 and not wait_for_gripper:
-                    wait_for_gripper = True
-
+                if action[-1] == 1.0 and prev_action[-1] == -1.0 and not start_gripper:
+                    start_gripper = True
                 
                 if is_noop(action, prev_action):
-                    if wait_for_gripper and action[-1] == prev_action[-1]:
-                        print(f'waiting for gripper')
-                    else:
-                        print(f"\tSkipping no-op action: {action}")
+                    if not is_waiting_for_gripper(action, prev_action, start_gripper):
                         num_noops += 1
                         continue
-                elif wait_for_gripper and np.linalg.norm(action[:-1]) > 0.01:
-                    print(f'end')
-                    wait_for_gripper = False
-                else:
-                    print(f'action: {action}')
+                    # se ancora l'azione è del tipo [..., 1.0] dove 1.0 è la chiusura del gripper,
+                    # continua a inviare tali azione nell'ambiente, ma non registrarle.
 
-                if not wait_for_gripper:
+                elif start_gripper and np.linalg.norm(action[:-1]) > 0.01:
+                    # print(f'end')
+                    start_gripper = False
+
+                # Collezioni tranne in due situazioni:
+                #   1) Se l'azione è una no-op (continue a riga 196)
+                #   2) Se l'azione è una no-op di chiusura del gripper.
+                if not is_waiting_for_gripper(action, prev_action, start_gripper):
                     if states == []:
                         # In the first timestep, since we're using the original initial state to initialize the environment,
                         # copy the initial state (first state in episode) over from the original HDF5 to the new one
@@ -223,7 +238,7 @@ def main(args):
                     from copy import deepcopy
                     image = deepcopy(obs["agentview_image"][::-1,:,::-1])
                     image = cv2.putText(image, f'{str(action)}', (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 
-                    0.3, (0, 0, 255), 1, cv2.LINE_AA)
+                    0.3, (0, 255, 0), 1, cv2.LINE_AA)
                     cv2.imwrite('test_obs.png', image)
                     # time.sleep(0.2)
 
@@ -232,6 +247,25 @@ def main(args):
                 # Execute demo action in environment
                 obs, reward, done, info = env.step(action.tolist())
 
+            # => video of the regenerated dataset
+            new_traj_path = './filtered_trajectories_gripper_corr'
+            os.makedirs(new_traj_path, exist_ok=True)     
+            mp4_path = f"{new_traj_path}/demo_{i}.mp4"
+            video_writer = imageio.get_writer(mp4_path, fps=30)
+            for img, act in zip(agentview_images, actions):  # these are the images and actions that will be saved in the regenerated hdf5 file
+                debug_img = deepcopy(img)
+                debug_img = deepcopy(debug_img[::-1,:,:])
+                debug_img = cv2.putText(debug_img, f'{str(act)}', (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 
+                0.2, (0, 0, 255), 1, cv2.LINE_AA)
+                video_writer.append_data(debug_img)
+            video_writer.close()
+            print(f"Saved rollout MP4 at path {mp4_path}")
+
+
+            # IMPORTANTE: non darà mai successo per il pick and place nel basket, visto che
+            # per questo task il successo viene registrato dopo che le azioni terminano.
+            # Infatti, dopo che il robot apre il gripper (ultima azione), l'ambiente non registra
+            # ancora successo, lo registrerà qualche step dopo (il tempo che cade l'oggetto)
             done = True
             # At end of episode, save replayed trajectories to new HDF5 files (only keep successes)
             if done:

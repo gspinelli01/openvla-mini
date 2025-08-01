@@ -26,13 +26,15 @@ Usage:
 import argparse
 import json
 import os
-import cv2
+# import cv2
+from copy import deepcopy
 
 import h5py
 import numpy as np
 import robosuite.utils.transform_utils as T
 import tqdm
 from libero.libero import benchmark
+import imageio
 
 from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
@@ -170,15 +172,10 @@ def main(args):
             for _, action in enumerate(orig_actions):
                 # Skip transitions with no-op actions
                 prev_action = actions[-1] if len(actions) > 0 else None
-                
-                # if is_noop(action, prev_action):
-                #     print(f"\tSkipping no-op action: {action}")
-                #     num_noops += 1
-                #     continue
-                # else:
-                #     print(f'action: {action}')
-
-                print(f'action: {action}')
+                if is_noop(action, prev_action):
+                    # print(f"\tSkipping no-op action: {action}")
+                    num_noops += 1
+                    continue
 
                 if states == []:
                     # In the first timestep, since we're using the original initial state to initialize the environment,
@@ -208,21 +205,23 @@ def main(args):
                     )
                 )
                 agentview_images.append(obs["agentview_image"])
-                # => Debug:
-                import time
-                from copy import deepcopy
-                image = deepcopy(obs["agentview_image"][::-1,:,::-1])
-                image = cv2.putText(image, f'{str(action)}', (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.3, (0, 0, 255), 1, cv2.LINE_AA)
-                cv2.imwrite('test_obs.png', image)
-                time.sleep(0.2)
-
                 eye_in_hand_images.append(obs["robot0_eye_in_hand_image"])
 
                 # Execute demo action in environment
                 obs, reward, done, info = env.step(action.tolist())
 
-            done = True
+
+            # => video of the regenerated dataset
+            new_traj_path = './filtered_trajectories'
+            os.makedirs(new_traj_path, exist_ok=True)     
+            mp4_path = f"{new_traj_path}/demo_{i}.mp4"
+            video_writer = imageio.get_writer(mp4_path, fps=30)
+            for img in agentview_images:
+                debug_img = deepcopy(img)
+                video_writer.append_data(debug_img[::-1,:,:])
+            video_writer.close()
+            print(f"Saved rollout MP4 at path {mp4_path}")
+
             # At end of episode, save replayed trajectories to new HDF5 files (only keep successes)
             if done:
                 dones = np.zeros(len(actions)).astype(np.uint8)
