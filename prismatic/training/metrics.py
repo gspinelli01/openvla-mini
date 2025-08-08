@@ -45,7 +45,7 @@ class ClearMLTracker:
         ) -> None:
         self.run_id, self.run_dir, self.hparams, self.project_name, self.task_name = run_id, run_dir, hparams, project_name, task_name
 
-        self.task = Task.init(project_name=f'{self.run_id}--{self.project_name}', task_name=self.task_name)
+        self.task = Task.init(project_name=f'{self.run_id}', task_name=self.task_name)
         self.logger = self.task.get_logger()
 
     @overwatch.rank_zero_only
