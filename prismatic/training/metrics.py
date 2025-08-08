@@ -15,6 +15,8 @@ import numpy as np
 import torch
 import wandb
 
+from clearml import Task
+
 from prismatic.overwatch import initialize_overwatch
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
@@ -31,6 +33,35 @@ class Tracker(Protocol):
 
 
 # === Individual Tracker Definitions ===
+
+class ClearMLTracker:
+    def __init__(
+            self,
+            run_id: str,
+            run_dir: Path,
+            hparams: Dict[str, Any],
+            project_name: str,
+            task_name: str
+        ) -> None:
+        self.run_id, self.run_dir, self.hparams, self.project_name, self.task_name = run_id, run_dir, hparams, project_name, task_name
+
+        self.task = Task.init(project_name=f'{self.run_id}--{self.project_name}', task_name=self.task_name)
+        self.logger = self.task.get_logger()
+
+    @overwatch.rank_zero_only
+    def write_hyperparameters(self) -> None:
+        pass
+
+    @overwatch.rank_zero_only
+    def write(self, _: int, metrics: Dict[str, Union[int, float]]) -> None:
+        iteration = metrics.pop('VLA Train/Step')
+        for k,v in metrics.items():
+            self.logger.report_scalar(title=k, series='a', value=v, iteration=iteration)
+
+    def finalize(self) -> None:
+        return
+
+
 class JSONLinesTracker:
     def __init__(self, run_id: str, run_dir: Path, hparams: Dict[str, Any]) -> None:
         self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
@@ -108,6 +139,8 @@ class Metrics:
         stage: str,
         wandb_project: str = "prismatic",
         wandb_entity: Optional[str] = None,
+        project_name: str = "vla_test",
+        task_name: str = "clearml_task",
         grad_accumulation_steps: int = 1,
         window_size: int = 128,
     ) -> None:
@@ -121,6 +154,10 @@ class Metrics:
             elif tracker_type == "wandb":
                 tracker = WeightsBiasesTracker(
                     run_id, run_dir, hparams, project=wandb_project, entity=wandb_entity, group=self.stage
+                )
+            elif tracker_type == "clearml":
+                tracker = ClearMLTracker(
+                    run_id, run_dir, hparams, project_name, task_name
                 )
             else:
                 raise ValueError(f"Tracker with type `{tracker_type} is not supported!")
@@ -218,6 +255,8 @@ class VLAMetrics:
         window_size: int = 1,
         resume_step: Optional[int] = None,
         resume_epoch: Optional[int] = None,
+        project_name: str = "vla_test",
+        task_name: str = "clearml_task",
     ) -> None:
         self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
 
@@ -229,6 +268,10 @@ class VLAMetrics:
             elif tracker_type == "wandb":
                 tracker = WeightsBiasesTracker(
                     run_id, run_dir, hparams, project=wandb_project, entity=wandb_entity, group="vla-train"
+                )
+            elif tracker_type == "clearml":
+                tracker = ClearMLTracker(
+                    run_id, run_dir, hparams, project_name, task_name
                 )
             else:
                 raise ValueError(f"Tracker with type `{tracker_type} is not supported!")
