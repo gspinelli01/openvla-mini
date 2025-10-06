@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import cv2
+import re
 
 import h5py
 import numpy as np
@@ -39,9 +40,15 @@ from experiments.robot.libero.libero_utils import (
     get_libero_env,
 )
 
+from pathlib import Path
+from libero.libero.envs.base_object import register_object
+
 import imageio
+from robosuite.models.objects import MujocoXMLObject
 
 IMAGE_RESOLUTION = 256
+
+jmhr_path_root = Path(os.getcwd()).parent.parent
 
 
 def is_noop(action, prev_action=None, threshold=1e-4):
@@ -74,6 +81,122 @@ def is_waiting_for_gripper(action, prev_action, gripper_is_started):
         # gripper_count+=1
         return True
     return False
+
+class CustomObjects(MujocoXMLObject):
+    def __init__(self, custom_path, name, obj_name, joints=[dict(type="free", damping="0.0005")]):
+        # make sure custom path is an absolute path
+        assert(os.path.isabs(custom_path)), "Custom path must be an absolute path"
+        # make sure the custom path is also an xml file
+        assert(custom_path.endswith(".xml")), "Custom path must be an xml file"
+        super().__init__(
+            custom_path,
+            name=name,
+            joints=joints,
+            obj_type="all",
+            duplicate_collision_geoms=False,
+        )
+        self.category_name = "_".join(
+            re.sub(r"([A-Z])", r" \1", self.__class__.__name__).split()
+        ).lower()
+        self.object_properties = {"vis_site_names": {}}
+
+#TODO: get absolute path from code
+@register_object
+class SquareNut(CustomObjects):
+    def __init__(self, name='square_nut', obj_name='square_nut', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/nuts/square-nut.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (3/2*np.pi, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class RoundNut(CustomObjects):
+    def __init__(self, name='round_nut', obj_name='round_nut', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/nuts/round-nut.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (3/2*np.pi, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class BrassPeg(CustomObjects):  # brass == ottone
+    def __init__(self, name='brass_peg', obj_name='brass_peg', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/peg/peg1.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, -np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+
+@register_object
+class WoodBin(CustomObjects):
+    def __init__(self, name='wood_bin', obj_name='wood_bin', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/bin/bin2.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, -np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class RedBlock(CustomObjects):
+    def __init__(self, name='red_block', obj_name='red_block', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/block/red_block.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class BlueBlock(CustomObjects):
+    def __init__(self, name='blue_block', obj_name='blue_block', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/block/blue_block.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
 
 
 def main(args):
@@ -115,7 +238,24 @@ def main(args):
     num_success = 0
     num_noops = 0
 
+    # Create debug image folder
+    curr_path = Path(os.path.abspath(__file__)).parent
+    debug_img_folder = os.path.join(curr_path, 'debug_img_orig_data')
+    os.makedirs(debug_img_folder, exist_ok=True)
+
+    # Create debug regenerated trajectories folder
+    curr_path = Path(os.path.abspath(__file__)).parent
+    debug_reg_video_folder = os.path.join(curr_path, 'filtered_trajectories')
+    os.makedirs(debug_reg_video_folder, exist_ok=True)
+
+
+    # task_id_{task_id}_traj_{i}
+
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+
+        task_id_folder = f'task_id_{task_id}'
+        os.makedirs(os.path.join(debug_reg_video_folder, task_id_folder), exist_ok=True)
+        os.makedirs(os.path.join(debug_img_folder, task_id_folder), exist_ok=True)
         # Get task in suite
         # task = task_suite.get_task(task_id)
         # env, task_description = get_libero_env(task, "llava", resolution=IMAGE_RESOLUTION)
@@ -136,7 +276,8 @@ def main(args):
         #   --
 
         import glob
-        hdf5_file_folder = glob.glob(f'{args.libero_raw_data_dir}/*{task_description}')
+        check = '_'.join(task_description.split('_')[2:])
+        hdf5_file_folder = glob.glob(f'{args.libero_raw_data_dir}/*{check}')
 
         if len(hdf5_file_folder) == 0:
             continue
@@ -153,7 +294,14 @@ def main(args):
         new_data_file = h5py.File(new_data_path, "w")
         grp = new_data_file.create_group("data")
 
+        filtered_demos_counter = 0
+
         for i in range(1, len(orig_data.keys())+1):
+
+            traj_folder = f'traj_{i}'
+            os.makedirs(os.path.join(debug_img_folder, task_id_folder, traj_folder), exist_ok=True)
+            os.makedirs(os.path.join(debug_reg_video_folder, task_id_folder, traj_folder), exist_ok=True)
+
             # Get demo data
             demo_data = orig_data[f"demo_{i}"]
             orig_actions = demo_data["actions"][()]
@@ -192,6 +340,7 @@ def main(args):
                 
                 if is_noop(action, prev_action):
                     if not is_waiting_for_gripper(action, prev_action, start_gripper):
+                        # print(f"\tSkipping no-op action: {action}")
                         num_noops += 1
                         continue
                     # se ancora l'azione è del tipo [..., 1.0] dove 1.0 è la chiusura del gripper,
@@ -247,10 +396,15 @@ def main(args):
                 # Execute demo action in environment
                 obs, reward, done, info = env.step(action.tolist())
 
+
+            # una volta finite le azioni, fai girare ancora (queste non vengono registrate)
+            for _ in range(100):
+                obs, reward, done, info = env.step(get_libero_dummy_action("llava"))
+
             # => video of the regenerated dataset
             new_traj_path = './filtered_trajectories_gripper_corr'
             os.makedirs(new_traj_path, exist_ok=True)     
-            mp4_path = f"{new_traj_path}/demo_{i}.mp4"
+            mp4_path = os.path.join(debug_reg_video_folder, task_id_folder, traj_folder, f"demo_{i}.mp4")
             video_writer = imageio.get_writer(mp4_path, fps=30)
             for img, act in zip(agentview_images, actions):  # these are the images and actions that will be saved in the regenerated hdf5 file
                 debug_img = deepcopy(img)
@@ -262,20 +416,22 @@ def main(args):
             print(f"Saved rollout MP4 at path {mp4_path}")
 
 
+
             # IMPORTANTE: non darà mai successo per il pick and place nel basket, visto che
             # per questo task il successo viene registrato dopo che le azioni terminano.
             # Infatti, dopo che il robot apre il gripper (ultima azione), l'ambiente non registra
             # ancora successo, lo registrerà qualche step dopo (il tempo che cade l'oggetto)
-            done = True
             # At end of episode, save replayed trajectories to new HDF5 files (only keep successes)
             if done:
+
+                filtered_demos_counter += 1
                 dones = np.zeros(len(actions)).astype(np.uint8)
                 dones[-1] = 1
                 rewards = np.zeros(len(actions)).astype(np.uint8)
                 rewards[-1] = 1
                 assert len(actions) == len(agentview_images)
 
-                ep_data_grp = grp.create_group(f"demo_{i}")
+                ep_data_grp = grp.create_group(f"demo_{filtered_demos_counter}")
                 obs_grp = ep_data_grp.create_group("obs")
                 obs_grp.create_dataset("gripper_states", data=np.stack(gripper_states, axis=0))
                 obs_grp.create_dataset("joint_states", data=np.stack(joint_states, axis=0))
@@ -333,7 +489,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ybq_task_suite",
         type=str,
-        choices=["ybq_floor"],
+        choices=["ybq_floor", "ybq_table"],
         help="YBQ task suite. Example: yqb_floor",
         required=True,
     )
