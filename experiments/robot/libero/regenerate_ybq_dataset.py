@@ -26,6 +26,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 # import cv2
 from copy import deepcopy
 
@@ -36,12 +37,133 @@ import tqdm
 from libero.libero import benchmark
 import imageio
 
+from libero.libero.envs.base_object import register_object
+from pathlib import Path
+from robosuite.models.objects import MujocoXMLObject
+
 from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
     get_libero_env,
 )
 
 IMAGE_RESOLUTION = 256
+jmhr_path_root = Path(os.getcwd()).parent.parent
+
+class CustomObjects(MujocoXMLObject):
+    def __init__(self, custom_path, name, obj_name, joints=[dict(type="free", damping="0.0005")]):
+        # make sure custom path is an absolute path
+        assert(os.path.isabs(custom_path)), "Custom path must be an absolute path"
+        # make sure the custom path is also an xml file
+        assert(custom_path.endswith(".xml")), "Custom path must be an xml file"
+        super().__init__(
+            custom_path,
+            name=name,
+            joints=joints,
+            obj_type="all",
+            duplicate_collision_geoms=False,
+        )
+        self.category_name = "_".join(
+            re.sub(r"([A-Z])", r" \1", self.__class__.__name__).split()
+        ).lower()
+        self.object_properties = {"vis_site_names": {}}
+
+#TODO: get absolute path from code
+@register_object
+class SquareNut(CustomObjects):
+    def __init__(self, name='square_nut', obj_name='square_nut', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/nuts/square-nut.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (3/2*np.pi, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class RoundNut(CustomObjects):
+    def __init__(self, name='round_nut', obj_name='round_nut', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/nuts/round-nut.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (3/2*np.pi, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class BrassPeg(CustomObjects):  # brass == ottone
+    def __init__(self, name='brass_peg', obj_name='brass_peg', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/peg/peg1.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, -np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+
+@register_object
+class WoodBin(CustomObjects):
+    def __init__(self, name='wood_bin', obj_name='wood_bin', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/bin/bin2.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, -np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class RedBlock(CustomObjects):
+    def __init__(self, name='red_block', obj_name='red_block', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/block/red_block.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class BlueBlock(CustomObjects):
+    def __init__(self, name='blue_block', obj_name='blue_block', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/block/blue_block.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
 
 
 def is_noop(action, prev_action=None, threshold=1e-4):
@@ -129,7 +251,8 @@ def main(args):
         #   --
 
         import glob
-        hdf5_file_folder = glob.glob(f'{args.libero_raw_data_dir}/*{task_description}')
+        check = '_'.join(task_description.split('_')[2:])
+        hdf5_file_folder = glob.glob(f'{args.libero_raw_data_dir}/*{check}')
 
         if len(hdf5_file_folder) == 0:
             continue
@@ -174,6 +297,7 @@ def main(args):
                 prev_action = actions[-1] if len(actions) > 0 else None
                 if is_noop(action, prev_action):
                     # print(f"\tSkipping no-op action: {action}")
+                    env.step(action)
                     num_noops += 1
                     continue
 
@@ -288,7 +412,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ybq_task_suite",
         type=str,
-        choices=["ybq_floor"],
+        choices=["ybq_floor", "ybq_table"],
         help="YBQ task suite. Example: yqb_floor",
         required=True,
     )
