@@ -402,8 +402,8 @@ def main(args):
                 obs, reward, done, info = env.step(get_libero_dummy_action("llava"))
 
             # => video of the regenerated dataset
-            new_traj_path = './filtered_trajectories_gripper_corr'
-            os.makedirs(new_traj_path, exist_ok=True)     
+            # new_traj_path = './filtered_trajectories_gripper_corr'
+            # os.makedirs(new_traj_path, exist_ok=True)     
             mp4_path = os.path.join(debug_reg_video_folder, task_id_folder, traj_folder, f"demo_{i}.mp4")
             video_writer = imageio.get_writer(mp4_path, fps=30)
             for img, act in zip(agentview_images, actions):  # these are the images and actions that will be saved in the regenerated hdf5 file

@@ -15,6 +15,15 @@ Usage:
         --use_wandb [ True | False ] \
         --wandb_project <PROJECT> \
         --wandb_entity <ENTITY>
+
+
+python experiments/robot/libero/run_libero_eval.py \
+        --model_family prismatic \
+        --pretrained_checkpoint models/minivla-libero90-prismatic/checkpoints/step-122500-epoch-55-loss=0.0743.pt \
+        --task_suite_name libero_90 \
+        --center_crop False \
+        --num_trials_per_task 50 \
+        --debug True
 """
 
 import os

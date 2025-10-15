@@ -27,7 +27,7 @@ import argparse
 import json
 import os
 import re
-# import cv2
+import cv2
 from copy import deepcopy
 
 import h5py
@@ -165,6 +165,38 @@ class BlueBlock(CustomObjects):
         }
         self.rotation_axis = None
 
+@register_object
+class GreenBlock(CustomObjects):
+    def __init__(self, name='green_block', obj_name='green_block', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/block/green_block.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
+@register_object
+class GrayBlock(CustomObjects):
+    def __init__(self, name='gray_block', obj_name='gray_block', joints=[dict(type="free", damping="0.0005")]):
+        super().__init__(
+            os.path.join(jmhr_path_root, 'assets/block/gray_block.xml'),
+            name=name,
+            obj_name=obj_name,
+            joints=joints)
+        
+        self.rotation = {
+            "x": (-np.pi/2, np.pi/2),
+            "y": (-np.pi, -np.pi),
+            "z": (np.pi, np.pi),
+        }
+        self.rotation_axis = None
+
 
 def is_noop(action, prev_action=None, threshold=1e-4):
     """
@@ -230,17 +262,24 @@ def main(args):
     num_success = 0
     num_noops = 0
 
+    # Create debug regenerated trajectories folder
+    curr_path = Path(os.path.abspath(__file__)).parent
+    debug_reg_video_folder = os.path.join(curr_path, f'filtered_trajectories_no-op-corr_{args.ybq_task_suite}')
+    os.makedirs(debug_reg_video_folder, exist_ok=True)
+
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task in suite
         # task = task_suite.get_task(task_id)
         # env, task_description = get_libero_env(task, "llava", resolution=IMAGE_RESOLUTION)
+        task_id_folder = f'task_id_{task_id}'
+        os.makedirs(os.path.join(debug_reg_video_folder, task_id_folder), exist_ok=True)
         """Initializes and returns the LIBERO environment, along with the task description."""
 
         task_bddl_file = str(all_tasks[task_id])
         task_description = task_bddl_file.split('/')[-1]
         task_description = re.split('\w+_SCENE\d_', task_description)[-1].split('.')[0]
 
-        env_args = {"bddl_file_name": task_bddl_file, "camera_heights": IMAGE_RESOLUTION, "camera_widths": IMAGE_RESOLUTION}
+        env_args = {"horizon": 10000, "bddl_file_name": task_bddl_file, "camera_heights": IMAGE_RESOLUTION, "camera_widths": IMAGE_RESOLUTION}
         env = OffScreenRenderEnv(**env_args)
         env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
 
@@ -269,7 +308,12 @@ def main(args):
         new_data_file = h5py.File(new_data_path, "w")
         grp = new_data_file.create_group("data")
 
+        filtered_demos_counter = 0
+
         for i in range(1, len(orig_data.keys())+1):
+
+            traj_folder = f'traj_{i}'
+            os.makedirs(os.path.join(debug_reg_video_folder, task_id_folder, traj_folder), exist_ok=True)
             # Get demo data
             demo_data = orig_data[f"demo_{i}"]
             orig_actions = demo_data["actions"][()]
@@ -297,7 +341,11 @@ def main(args):
                 prev_action = actions[-1] if len(actions) > 0 else None
                 if is_noop(action, prev_action):
                     # print(f"\tSkipping no-op action: {action}")
-                    env.step(action)
+                    try:
+                        env.step(action)
+                    except ValueError as e:
+                        print(f'EXCEPTION: {e} \n -> We skip the action')
+                        break
                     num_noops += 1
                     continue
 
@@ -332,29 +380,51 @@ def main(args):
                 eye_in_hand_images.append(obs["robot0_eye_in_hand_image"])
 
                 # Execute demo action in environment
-                obs, reward, done, info = env.step(action.tolist())
+                try:
+                    obs, reward, done, info = env.step(action.tolist())
+                except ValueError as e:
+                    print(f'EXCEPTION: {e} \n -> We skip the action')
+                    break
 
+
+            # una volta finite le azioni, fai girare ancora fino a quando il task non segna successo (queste non vengono registrate)
+            done_counter = 0
+            while not done:
+                try:
+                    obs, reward, done, info = env.step(get_libero_dummy_action("llava"))
+                except ValueError as e:
+                    print(f'EXCEPTION: {e} \n -> We skip the action')
+                    break
+                done_counter+=1
+                if done_counter >= 200:
+                    break
+
+            print(f'done counter: {done_counter}')
 
             # => video of the regenerated dataset
-            new_traj_path = './filtered_trajectories'
-            os.makedirs(new_traj_path, exist_ok=True)     
-            mp4_path = f"{new_traj_path}/demo_{i}.mp4"
+            # new_traj_path = './filtered_trajectories_no-op_correction'
+            # os.makedirs(new_traj_path, exist_ok=True)     
+            mp4_path = os.path.join(debug_reg_video_folder, task_id_folder, traj_folder, f"demo_{i}.mp4")
             video_writer = imageio.get_writer(mp4_path, fps=30)
-            for img in agentview_images:
+            for img, act in zip(agentview_images, actions):  # these are the images and actions that will be saved in the regenerated hdf5 file
                 debug_img = deepcopy(img)
-                video_writer.append_data(debug_img[::-1,:,:])
+                debug_img = deepcopy(debug_img[::-1,:,:])
+                debug_img = cv2.putText(debug_img, f'{str(act)}', (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 
+                0.2, (0, 0, 255), 1, cv2.LINE_AA)
+                video_writer.append_data(debug_img)
             video_writer.close()
+            
             print(f"Saved rollout MP4 at path {mp4_path}")
-
             # At end of episode, save replayed trajectories to new HDF5 files (only keep successes)
             if done:
+                filtered_demos_counter += 1
                 dones = np.zeros(len(actions)).astype(np.uint8)
                 dones[-1] = 1
                 rewards = np.zeros(len(actions)).astype(np.uint8)
                 rewards[-1] = 1
                 assert len(actions) == len(agentview_images)
 
-                ep_data_grp = grp.create_group(f"demo_{i}")
+                ep_data_grp = grp.create_group(f"demo_{filtered_demos_counter}")
                 obs_grp = ep_data_grp.create_group("obs")
                 obs_grp.create_dataset("gripper_states", data=np.stack(gripper_states, axis=0))
                 obs_grp.create_dataset("joint_states", data=np.stack(joint_states, axis=0))
@@ -412,7 +482,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ybq_task_suite",
         type=str,
-        choices=["ybq_floor", "ybq_table"],
+        choices=["ybq_floor", "ybq_table", "ybq_blocks"],
         help="YBQ task suite. Example: yqb_floor",
         required=True,
     )

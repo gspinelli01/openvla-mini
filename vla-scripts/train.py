@@ -86,8 +86,8 @@ class TrainConfig:
     hf_token: Union[str, Path] = Path(".hf_token")                  # Environment variable or Path to HF Token
 
     # Tracking Parameters
-    # trackers: Tuple[str, ...] = ("jsonl", "wandb")                  # Trackers to initialize (if W&B, add config!)
-    trackers: Tuple[str, ...] = ("jsonl",)
+    trackers: Tuple[str, ...] = ("jsonl", "wandb")                  # Trackers to initialize (if W&B, add config!)
+    # trackers: Tuple[str, ...] = ("clearml",)
     wandb_project: str = "default"                                  # Name of W&B project to log to (use default!)
     wandb_entity: str = None                          # Name of entity to log under
 
